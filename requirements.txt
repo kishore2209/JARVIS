@@ -2,3 +2,4 @@ numpy
 sounddevice
 faster-whisper
 pyttsx3
+smartapi-python
