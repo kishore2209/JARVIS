@@ -1,41 +1,51 @@
+from core.ai_brain import AIBrain
+
+
 class JarvisCore:
-	def __init__(self):
-		self.name = "J.A.R.V.I.S"
-		self.status = "ONLINE"
+    def __init__(self):
+        self.name = "J.A.R.V.I.S"
+        self.status = "ONLINE"
+        self.brain = AIBrain()
 
-	def process_command(self, command):
-		command = command.lower().strip()
+    def process_command(self, command):
+        result = self.brain.understand(command)
 
-		if command in ["hello", "hi", "hey"]:
-			return "Hello. J.A.R.V.I.S is online."
+        intent = result["intent"]
 
-		if "status" in command:
-			return f"{self.name} is {self.status}."
+        if intent == "greeting":
+            return "Hello. J.A.R.V.I.S is online."
 
-		if "who are you" in command:
-			return "I am J.A.R.V.I.S, your personal AI assistant."
+        if intent == "system_status":
+            return f"{self.name} is {self.status}."
 
-		if "exit" in command or "quit" in command:
-			return "Goodbye."
+        if intent == "identity":
+            return "I am J.A.R.V.I.S, your personal AI assistant."
 
-		return "I understand your command, but this capability is not implemented yet."
+        if intent == "market_analysis":
+            return "Market analysis capability is connected to the AI Brain."
+
+        if intent == "exit":
+            return "Goodbye."
+
+        return "I understand your command, but this capability is not implemented yet."
 
 
 if __name__ == "__main__":
-	jarvis = JarvisCore()
+    jarvis = JarvisCore()
 
-	print("================================")
-	print("       J.A.R.V.I.S CORE")
-	print("================================")
-	print("Status: ONLINE")
-	print("Type 'exit' to stop.\n")
+    print("================================")
+    print("       J.A.R.V.I.S CORE")
+    print("================================")
+    print("Status: ONLINE")
+    print("AI Brain: CONNECTED")
+    print("Type 'exit' to stop.\n")
 
-	while True:
-		command = input("You: ")
+    while True:
+        command = input("You: ")
 
-		response = jarvis.process_command(command)
+        response = jarvis.process_command(command)
 
-		print(f"JARVIS: {response}")
+        print(f"JARVIS: {response}")
 
-		if command.lower().strip() in ["exit", "quit"]:
-			break
+        if command.lower().strip() in ["exit", "quit"]:
+            break
