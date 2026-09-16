@@ -18,15 +18,25 @@ class Indicators:
 
         return ema_value
 
+    @staticmethod
+    def ema_set(prices):
+        return {
+            "ema_20": Indicators.ema(prices, 20),
+            "ema_50": Indicators.ema(prices, 50),
+            "ema_200": Indicators.ema(prices, 200),
+        }
+
 
 if __name__ == "__main__":
-    prices = [
-        100, 102, 101, 105, 107,
-        106, 108, 110, 109, 112
-    ]
+    # Test data
+    prices = list(range(100, 301))
 
     print("================================")
     print("       J.A.R.V.I.S QUANT")
     print("================================")
 
-    print("EMA 5:", Indicators.ema(prices, 5))
+    result = Indicators.ema_set(prices)
+
+    print("EMA 20:", result["ema_20"])
+    print("EMA 50:", result["ema_50"])
+    print("EMA 200:", result["ema_200"])
