@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from market.fno.models import FNOInstrument
+from market.fno.active_universe import ActiveFNOUniverseBuilder
 from market.fno.instrument_master import AngelOneInstrumentMasterAdapter
 from market.fno.instrument_master_service import AngelOneFNOUniverseService
 from market.fno.universe import FNOUniverse, mock_fno_records
@@ -22,6 +23,7 @@ from market.providers.angel_one_instrument_master import (
 
 def main():
     universe = FNOUniverse(mock_fno_records())
+    active_builder = ActiveFNOUniverseBuilder()
     adapter = AngelOneInstrumentMasterAdapter(datetime(2026, 9, 16, 9, 15, tzinfo=timezone.utc))
     results = []
 
@@ -226,6 +228,28 @@ def main():
         if record["source"] != "ANGEL_ONE_INSTRUMENT_MASTER" or not record["is_fresh"] or record["timestamp"].tzinfo != timezone.utc:
             raise AssertionError("Download source, freshness, or UTC timestamp is incorrect.")
 
+    def test_active_universe_builder():
+        active_universe = active_builder.build(universe.all())
+        if len(active_universe.all()) != 5 or any(not item.active for item in active_universe.all()):
+            raise AssertionError("Active universe included an inactive instrument.")
+
+    def test_active_universe_contents():
+        active_universe = active_builder.build(universe.all())
+        if len(active_universe.futures()) != 3:
+            raise AssertionError("Active universe futures count is incorrect.")
+        if len(active_builder.call_options(active_universe)) != 1:
+            raise AssertionError("Active universe call option count is incorrect.")
+        if len(active_builder.put_options(active_universe)) != 1:
+            raise AssertionError("Active universe put option count is incorrect.")
+        if active_builder.underlying_symbols(active_universe) != ["BANKNIFTY", "HDFCBANK", "INFY", "NIFTY", "RELIANCE"]:
+            raise AssertionError("Active universe underlyings are incorrect.")
+
+    def test_active_universe_metadata():
+        active_universe = active_builder.build(universe.all())
+        instrument = active_universe.all()[0]
+        if instrument.source != "MOCK_TEST" or instrument.timestamp.tzinfo != timezone.utc or not instrument.is_fresh:
+            raise AssertionError("Active universe did not preserve instrument metadata.")
+
     print("=" * 40)
     print("J.A.R.V.I.S F&O UNIVERSE TEST")
     print("=" * 40)
@@ -257,6 +281,9 @@ def main():
     run_test("Download Empty Data", test_download_empty_data)
     run_test("Download To Universe", test_download_to_universe)
     run_test("Download Metadata", test_download_metadata)
+    run_test("Active Universe Builder", test_active_universe_builder)
+    run_test("Active Universe Contents", test_active_universe_contents)
+    run_test("Active Universe Metadata", test_active_universe_metadata)
 
     passed = sum(passed for _, passed in results)
     failed = len(results) - passed
