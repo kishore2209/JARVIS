@@ -8,64 +8,18 @@ class AIBrain:
         command = command.lower().strip()
 
         if "hello" in command or "hi" in command:
-            return {
-                "intent": "greeting",
-                "confidence": 1.0,
-                "command": original_command
-            }
+            return {"intent": "greeting", "confidence": 1.0, "command": original_command}
 
         if "status" in command:
-            return {
-                "intent": "system_status",
-                "confidence": 1.0,
-                "command": original_command
-            }
+            return {"intent": "system_status", "confidence": 1.0, "command": original_command}
 
         if "who are you" in command:
-            return {
-                "intent": "identity",
-                "confidence": 1.0,
-                "command": original_command
-            }
+            return {"intent": "identity", "confidence": 1.0, "command": original_command}
 
         if "market" in command or "stock" in command:
-            return {
-                "intent": "market_analysis",
-                "confidence": 0.9,
-                "command": original_command
-            }
+            return {"intent": "market_analysis", "confidence": 0.9, "command": original_command}
 
         if "exit" in command or "quit" in command:
-            return {
-                "intent": "exit",
-                "confidence": 1.0,
-                "command": original_command
-            }
+            return {"intent": "exit", "confidence": 1.0, "command": original_command}
 
-        return {
-            "intent": "unknown",
-            "confidence": 0.0,
-            "command": original_command
-        }
-
-
-if __name__ == "__main__":
-    brain = AIBrain()
-
-    print("================================")
-    print("       J.A.R.V.I.S AI BRAIN")
-    print("================================")
-    print("Status:", brain.status)
-
-    while True:
-        command = input("\nYou: ")
-
-        result = brain.understand(command)
-
-        print("Detected Intent:", result["intent"])
-        print("Confidence:", result["confidence"])
-        print("Command:", result["command"])
-
-        if result["intent"] == "exit":
-            print("AI Brain shutting down.")
-            break
+        return {"intent": "unknown", "confidence": 0.0, "command": original_command}
