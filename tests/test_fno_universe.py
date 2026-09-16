@@ -11,8 +11,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from market.fno.models import FNOInstrument
 from market.fno.instrument_master import AngelOneInstrumentMasterAdapter
+from market.fno.instrument_master_service import AngelOneFNOUniverseService
 from market.fno.universe import FNOUniverse, mock_fno_records
 from market.fno.validators import validate_instrument
+from market.providers.angel_one_instrument_master import (
+    AngelOneInstrumentMasterClient,
+    InstrumentMasterDownloadError,
+)
 
 
 def main():
@@ -142,6 +147,85 @@ def main():
         if len(normalized_universe.all()) != 2:
             raise AssertionError("Normalized master records did not load into FNOUniverse.")
 
+    class FakeResponse:
+        def __init__(self, payload, status=200):
+            self.payload = payload
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def getcode(self):
+            return self.status
+
+        def read(self):
+            return self.payload
+
+    def master_client(payload, status=200):
+        return AngelOneInstrumentMasterClient(
+            opener=lambda request, timeout: FakeResponse(payload, status),
+            clock=lambda: datetime(2026, 9, 16, 9, 15, tzinfo=timezone.utc),
+        )
+
+    def test_download_success():
+        records = master_client(b'[{"token":"MASTER001"}]').fetch_records()
+        if records[0]["token"] != "MASTER001":
+            raise AssertionError("Raw downloaded record was not returned.")
+
+    def test_download_http_error():
+        try:
+            master_client(b"[]", status=503).fetch_records()
+        except InstrumentMasterDownloadError as error:
+            if "HTTP 503" in str(error):
+                return
+            raise
+        raise AssertionError("HTTP failure was not reported.")
+
+    def test_download_timeout():
+        def timeout_opener(request, timeout):
+            raise TimeoutError("timed out")
+        try:
+            AngelOneInstrumentMasterClient(opener=timeout_opener).fetch_records()
+        except InstrumentMasterDownloadError:
+            return
+        raise AssertionError("Timeout was not reported.")
+
+    def test_download_invalid_json():
+        try:
+            master_client(b"not json").fetch_records()
+        except InstrumentMasterDownloadError:
+            return
+        raise AssertionError("Invalid JSON was not rejected.")
+
+    def test_download_non_list():
+        try:
+            master_client(b'{"token":"MASTER001"}').fetch_records()
+        except InstrumentMasterDownloadError:
+            return
+        raise AssertionError("Non-list payload was not rejected.")
+
+    def test_download_empty_data():
+        try:
+            master_client(b"[]").fetch_records()
+        except InstrumentMasterDownloadError:
+            return
+        raise AssertionError("Empty master data was not rejected.")
+
+    def test_download_to_universe():
+        payload = b'[{"token":"MASTER001","symbol":"NIFTY24SEPFUT","name":"NIFTY","expiry":"24SEP2026","strike":"0","lotsize":"75","tick_size":"5","instrumenttype":"FUTIDX","exch_seg":"NFO"},{"token":"MASTER002","symbol":"NIFTY24SEP25000CE","name":"NIFTY","expiry":"24SEP2026","strike":"2500000","lotsize":"75","tick_size":"5","instrumenttype":"OPTIDX","exch_seg":"NFO"},{"token":"EQ001","symbol":"UNSUPPORTED","name":"UNSUPPORTED","expiry":"","strike":"0","lotsize":"1","tick_size":"5","instrumenttype":"EQ","exch_seg":"BSE"}]'
+        service = AngelOneFNOUniverseService(client=master_client(payload), adapter=adapter)
+        downloaded_universe = service.load_universe()
+        if len(downloaded_universe.all()) != 2 or len(downloaded_universe.options()) != 1:
+            raise AssertionError("Downloaded records did not reach the F&O universe correctly.")
+
+    def test_download_metadata():
+        record = master_client(b'[{"token":"MASTER001"}]').fetch_records()[0]
+        if record["source"] != "ANGEL_ONE_INSTRUMENT_MASTER" or not record["is_fresh"] or record["timestamp"].tzinfo != timezone.utc:
+            raise AssertionError("Download source, freshness, or UTC timestamp is incorrect.")
+
     print("=" * 40)
     print("J.A.R.V.I.S F&O UNIVERSE TEST")
     print("=" * 40)
@@ -165,6 +249,14 @@ def main():
     run_test("Master Lot/Tick Normalization", test_master_lot_and_tick_normalization)
     run_test("Master Source/Timestamp", test_master_source_and_timestamp)
     run_test("Master Universe Loading", test_master_universe_loading)
+    run_test("Download Success", test_download_success)
+    run_test("Download HTTP Error", test_download_http_error)
+    run_test("Download Timeout", test_download_timeout)
+    run_test("Download Invalid JSON", test_download_invalid_json)
+    run_test("Download Non-List", test_download_non_list)
+    run_test("Download Empty Data", test_download_empty_data)
+    run_test("Download To Universe", test_download_to_universe)
+    run_test("Download Metadata", test_download_metadata)
 
     passed = sum(passed for _, passed in results)
     failed = len(results) - passed

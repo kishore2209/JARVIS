@@ -65,6 +65,7 @@ class AngelOneInstrumentMasterAdapter(InstrumentMasterProvider):
                 active=bool(record.get("active", True)),
                 source=str(record.get("source", self.source)),
                 timestamp=record.get("timestamp", self.timestamp),
+                is_fresh=bool(record.get("is_fresh", True)),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"Malformed Angel One instrument-master record: {error}") from error

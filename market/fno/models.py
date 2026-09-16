@@ -19,6 +19,7 @@ class FNOInstrument:
     active: bool
     source: str
     timestamp: datetime
+    is_fresh: bool = True
 
     def __post_init__(self):
         if self.timestamp.tzinfo is None:
