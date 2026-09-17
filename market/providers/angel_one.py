@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from market.ohlcv import MarketQuote, OHLCV
@@ -52,7 +53,16 @@ class AngelOneMarketDataProvider(MarketDataProvider):
             raise RuntimeError("Install smartapi-python to use Angel One market data.") from error
 
         self.client = SmartConnect(api_key=self.api_key)
-        return self.client.generateSession(self.client_code, self.pin, self.totp)
+        try:
+            response = self.client.generateSession(self.client_code, self.pin, self.totp)
+        except Exception as error:
+            self.client = None
+            raise RuntimeError("Angel One login failed.") from error
+        if not isinstance(response, dict) or not response.get("status"):
+            self.client = None
+            message = response.get("message", "unknown authentication error") if isinstance(response, dict) else "invalid login response"
+            raise RuntimeError(f"Angel One login failed: {message}")
+        return response
 
     def _require_client(self):
         if self.client is None:
@@ -102,7 +112,10 @@ class AngelOneMarketDataProvider(MarketDataProvider):
         try:
             response = self.client.getCandleData(parameters)
         except Exception as error:
-            raise RuntimeError("Angel One historical candle request failed.") from error
+            detail = self._sanitize_exception_message(error)
+            raise RuntimeError(
+                f"Angel One historical candle request failed: {type(error).__name__}: {detail}"
+            ) from error
 
         if not isinstance(response, dict) or not response.get("status"):
             message = response.get("message", "unknown API error") if isinstance(response, dict) else "invalid API response"
@@ -147,13 +160,26 @@ class AngelOneMarketDataProvider(MarketDataProvider):
         return value.astimezone(timezone.utc)
 
     def _format_broker_time(self, value):
-        return value.astimezone(self._BROKER_TIMEZONE).strftime("%d-%m-%Y %H:%M")
+        return value.astimezone(self._BROKER_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
     def _utc_now(self):
         timestamp = self._clock()
         if timestamp.tzinfo is None:
             raise ValueError("Provider clock must return a timezone-aware datetime.")
         return timestamp.astimezone(timezone.utc)
+
+    def _sanitize_exception_message(self, error):
+        message = str(error) or "no message provided"
+        for value in (self.api_key, self.client_code, self.pin, self.totp):
+            if value:
+                message = message.replace(value, "<redacted>")
+        if re.search(r"authorization|headers?\s*[:=]", message, re.IGNORECASE):
+            return "sensitive request details redacted"
+        return re.sub(
+            r"(?i)\b(api[_ -]?key|client[_ -]?code|pin|totp|token)\b\s*[:=]\s*[^,\s}\]]+",
+            r"\1=<redacted>",
+            message,
+        )
 
     def get_oi(self, symbol, exchange, token=None):
         self._require_client()

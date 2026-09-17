@@ -73,6 +73,8 @@ def main():
         AngelOneMarketDataProvider(client, clock=lambda: now).get_candles("RELIANCE", "NSE", "500325", 10, "15m")
         if client.parameters["interval"] != "FIFTEEN_MINUTE":
             raise AssertionError("Interval mapping is incorrect.")
+        if client.parameters["fromdate"] != "2026-09-07 15:35" or client.parameters["todate"] != "2026-09-17 15:35":
+            raise AssertionError("Broker request dates must use YYYY-MM-DD HH:MM in Asia/Kolkata time.")
 
     def test_response_errors():
         for response in ({"status": True, "data": []}, {"status": False, "message": "rate limit"}):
@@ -89,9 +91,17 @@ def main():
             pass
         else:
             raise AssertionError("Malformed candle row was accepted.")
+        failing_provider = provider(error=ConnectionError("api-key=secret-key token=secret-token unavailable"))
+        failing_provider.api_key = "secret-key"
+        failing_provider.client_code = "secret-client"
+        failing_provider.pin = "secret-pin"
+        failing_provider.totp = "secret-totp"
         try:
-            provider(error=ConnectionError("offline")).get_candles("RELIANCE", "NSE", "500325")
-        except RuntimeError:
+            failing_provider.get_candles("RELIANCE", "NSE", "500325")
+        except RuntimeError as error:
+            message = str(error)
+            if "ConnectionError" not in message or "secret-key" in message or "secret-token" in message:
+                raise AssertionError("SDK error diagnostic was not safely sanitized.")
             return
         raise AssertionError("SDK exception was not reported.")
 

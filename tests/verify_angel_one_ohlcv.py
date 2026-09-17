@@ -1,4 +1,4 @@
-# Run from the project root: python tests/verify_angel_one_ohlcv.py RELIANCE NSE 500325 15m
+# Run from the project root: python tests/verify_angel_one_ohlcv.py RELIANCE NSE 2885 15m
 """Manual read-only verification of Angel One normalized historical OHLCV."""
 
 import os
@@ -20,7 +20,7 @@ def main():
 
     symbol = sys.argv[1] if len(sys.argv) > 1 else "RELIANCE"
     exchange = sys.argv[2] if len(sys.argv) > 2 else "NSE"
-    token = sys.argv[3] if len(sys.argv) > 3 else "500325"
+    token = sys.argv[3] if len(sys.argv) > 3 else "2885"
     interval = sys.argv[4] if len(sys.argv) > 4 else "15m"
     provider = AngelOneMarketDataProvider()
 
@@ -28,7 +28,7 @@ def main():
         provider.login()
         candles = provider.get_candles(symbol, exchange, token, 240, interval)
     except (RuntimeError, ValueError) as error:
-        print(f"Live verification failed: {error}")
+        print(f"Live verification failed (safe diagnostic): {error}")
         return 1
 
     latest = candles[-1]
