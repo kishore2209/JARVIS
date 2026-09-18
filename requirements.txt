@@ -3,3 +3,6 @@ sounddevice
 faster-whisper
 pyttsx3
 smartapi-python
+fastapi
+uvicorn
+google-genai

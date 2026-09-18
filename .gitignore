@@ -4,3 +4,12 @@ __pycache__/
 .env
 memory/*.json
 logs/
+data/
+*.db
+*.sqlite
+*.sqlite3
+runtime/
+frontend/.vite/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo

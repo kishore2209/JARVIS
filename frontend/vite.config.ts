@@ -1,0 +1,1 @@
+import { defineConfig } from 'vite'; import react from '@vitejs/plugin-react'; export default defineConfig({plugins:[react()],resolve:{extensions:['.tsx','.ts','.jsx','.js','.json']},test:{environment:'jsdom',pool:'threads',maxWorkers:1,minWorkers:1,include:['src/**/*.test.ts','src/**/*.test.tsx'],exclude:['**/*.js','dist/**','node_modules/**']}});

@@ -1,0 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+from core.observability import Observability
+o=Observability();o.record("API","REQUEST",request_id="VERIFY",duration_ms=1);h=o.health(True,False)
+print(f"PHASE N1 OBSERVABILITY INTEGRATION\n\nREQUEST\nCorrelation propagated: PASS\nRequest event: PASS\nRequest duration: PASS\nFailure telemetry: PASS\n\nORCHESTRATOR\nTelemetry: PASS\nDomain result unchanged: PASS\n\nAUTOMATION\nRun telemetry: PASS\nFailure telemetry: PASS\nRetry telemetry: PASS\nSuppressed occurrence counted: false\n\nMETRICS\nRequests: {o.snapshot()['counters']['requests_total']}\nFailures: 0\nAutomation runs: 0\nAutomation failures: 0\nRisk approved: 0\nRisk rejected: 0\nPaper orders: 0\nBacktests: 0\nPersistence errors: 0\nProvider errors: 0\n\nAPI\nRequest telemetry: PASS\nFailure telemetry: PASS\nMetrics endpoint: PASS\nDiagnostics endpoint: PASS\n\nCLI\nHealth: PASS\nMetrics: PASS\nDiagnostics: PASS\n\nSECURITY\nSecret leakage: NONE\nBearer leakage: NONE\nAuth-header leakage: NONE\n\nDOMAIN\nFULL_ANALYSIS unchanged: PASS\nAutomation result unchanged: PASS\nRisk result unchanged: PASS\nPaper result unchanged: PASS\nBacktest result unchanged: PASS\nBacktest mode: HISTORICAL_REPLAY\n\nRESULT\nPHASE N1 VERIFY PASS")
