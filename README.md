@@ -56,11 +56,16 @@ npm run dev
 The frontend targets `http://127.0.0.1:8000` by default.
 
 ## Validation
-- Backend test scripts live in `/home/runner/work/JARVIS/JARVIS/tests`
-- Frontend validation uses TypeScript, Vitest, and Vite build checks from `/home/runner/work/JARVIS/JARVIS/frontend`
+- Backend test scripts live in `tests/`
+- Frontend validation uses TypeScript, Vitest, and Vite build checks from `frontend/`
+
+## Roadmap and current scope
+- The sections above describe the code currently implemented in this repository.
+- Planned future phases are tracked separately in `docs/ROADMAP.md`.
+- Roadmap items are goals, not shipped functionality.
 
 ## Documentation
-- `/home/runner/work/JARVIS/JARVIS/docs/SETUP.md`
-- `/home/runner/work/JARVIS/JARVIS/docs/ARCHITECTURE.md`
-- `/home/runner/work/JARVIS/JARVIS/docs/ROADMAP.md`
-- `/home/runner/work/JARVIS/JARVIS/docs/releases/v1.0.0.md`
+- `docs/SETUP.md`
+- `docs/ARCHITECTURE.md`
+- `docs/ROADMAP.md`
+- `docs/releases/v1.0.0.md`
