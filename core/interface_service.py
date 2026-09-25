@@ -30,6 +30,7 @@ class JarvisInterfaceService:
             request=JarvisRequest(payload.get("request_id","INTERFACE"),kind,timestamp,payload.get("instrument"),payload.get("exchange","NSE"),payload.get("token"),payload.get("interval","15m"),payload.get("data_source","PROVIDER"),mode,payload.get("parameters"),payload.get("explicit_user_authorization",False),payload.get("source","INTERFACE"))
             result=self.orchestrator.handle(request)
             if result.status in {"AUTHORIZATION_REQUIRED","RISK_REJECTED","LIVE_EXECUTION_UNSUPPORTED"}: return self._error(result.status,result.status,result)
+            if result.status != "COMPLETED": return self._error("PIPELINE_FAILED", result.status, result)
             return {"status":"OK","result":serialize(result)}
         except (ValueError, TypeError) as error: return self._error("INVALID_REQUEST",str(error))
         except Exception as error: return self._error("INTERNAL_ERROR",self._safe(str(error)))

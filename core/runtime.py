@@ -22,6 +22,7 @@ from core.orchestrator import JarvisOrchestrator
 from market.paper_trading import PaperAccount, PaperTradingEngine
 from market.persistence import SQLiteStore
 from market.providers.mock import MockMarketDataProvider
+from market.data_pipeline import FileMarketDataProvider, ReadOnlyAngelDataProvider, INTERVALS
 
 JARVIS_VERSION = "0.1.0"
 _ALLOWED_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
@@ -51,8 +52,17 @@ class RuntimeConfig:
     log_level: str = "INFO"
     cors_origins: tuple[str, ...] = ("http://127.0.0.1:5173", "http://localhost:5173")
     llm: LLMConfig = LLMConfig()
+    data_provider: str = "MOCK"
+    candle_file: str = ""
+    candle_interval: str = "15m"
 
     def __post_init__(self) -> None:
+        if self.data_provider not in {"MOCK", "FILE", "ANGEL_ONE"}:
+            raise RuntimeConfigurationError("Unsupported JARVIS_DATA_PROVIDER")
+        if self.candle_interval not in INTERVALS:
+            raise RuntimeConfigurationError("Unsupported JARVIS_CANDLE_INTERVAL")
+        if self.data_provider == "FILE" and not self.candle_file:
+            raise RuntimeConfigurationError("JARVIS_CANDLE_FILE is required for FILE provider")
         if not self.host or any(char.isspace() for char in self.host):
             raise RuntimeConfigurationError("JARVIS_HOST must be a non-empty host")
         if not 1 <= self.port <= 65535:
@@ -83,6 +93,9 @@ class RuntimeConfig:
             log_level=os.getenv("JARVIS_LOG_LEVEL", "INFO").upper(),
             cors_origins=origins,
             llm=LLMConfig.from_environment(),
+            data_provider=os.getenv("JARVIS_DATA_PROVIDER", "MOCK").upper(),
+            candle_file=os.getenv("JARVIS_CANDLE_FILE", ""),
+            candle_interval=os.getenv("JARVIS_CANDLE_INTERVAL", "15m"),
         )
 
     def safe_status(self, llm_configured: bool = False) -> dict:
@@ -100,6 +113,10 @@ class RuntimeConfig:
             "llm_configured": bool(llm_configured),
             "cors_origins": list(self.cors_origins),
             "live_execution_supported": False,
+            "data_provider": self.data_provider,
+            "demo_data": self.data_provider == "MOCK",
+            "candle_interval": self.candle_interval,
+            "data_connection_verified": False,
         }
 
 
@@ -131,9 +148,11 @@ class RuntimeComponents:
 def create_runtime(config: RuntimeConfig | None = None) -> RuntimeComponents:
     config = config or RuntimeConfig.from_environment()
     observability = Observability()
-    provider = MockMarketDataProvider()
+    provider = (FileMarketDataProvider(config.candle_file, config.candle_interval) if config.data_provider == "FILE"
+                else ReadOnlyAngelDataProvider() if config.data_provider == "ANGEL_ONE"
+                else MockMarketDataProvider())
     orchestrator = JarvisOrchestrator(provider, observability=observability)
-    paper_engine = PaperTradingEngine(PaperAccount("100000"))
+    paper_engine = PaperTradingEngine(PaperAccount("100000"), safety_path=Path(config.db_path).parent / "paper-safety.json")
     automation = AutomationController(orchestrator)
     llm = build_external_llm_from_env(observability, config.llm) if config.llm.enabled else None
     conversation = JarvisConversationService(orchestrator, observability=observability, external_llm=llm, llm_config=config.llm)

@@ -2,7 +2,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from market.risk import RiskDecision, TradeProposal, _decimal
+from market.paper_safety import PaperSafetySwitch
+from market.risk import RiskDecision, TradeProposal, _decimal, proposal_fingerprint
 
 
 @dataclass(frozen=True)
@@ -104,19 +105,29 @@ class PaperAccount:
 
 class PaperTradingEngine:
     """Deterministic in-memory PAPER executor. It has no provider or broker dependency."""
-    def __init__(self, account, same_candle_policy="STOP_FIRST"):
+    def __init__(self, account, same_candle_policy="STOP_FIRST", safety_path=None):
         if same_candle_policy != "STOP_FIRST":
             raise ValueError("Only the conservative STOP_FIRST policy is supported.")
         self.account = account
+        self.safety = PaperSafetySwitch(safety_path)
         self.same_candle_policy = same_candle_policy
         self._order_number = self._fill_number = self._position_number = 0
 
+    @property
+    def halted(self):
+        return self.safety.halted
+
+    def set_halted(self, halted):
+        self.safety.set(halted)
+
     def create_order(self, proposal, decision):
+        if self.halted:
+            raise ValueError("Paper execution is halted by the kill switch.")
         if not isinstance(proposal, TradeProposal) or not isinstance(decision, RiskDecision):
             raise ValueError("TradeProposal and RiskDecision are required.")
         if not decision.approved:
             raise ValueError("Paper order rejected: RiskDecision is not approved.")
-        if proposal.instrument != decision.instrument or decision.approved_quantity <= 0:
+        if decision.proposal_fingerprint != proposal_fingerprint(proposal) or proposal.instrument != decision.instrument or decision.approved_quantity <= 0:
             raise ValueError("Paper order rejected: approved decision does not match proposal.")
         self._order_number += 1
         order = VirtualOrder(f"PAPER-ORDER-{self._order_number:04d}", proposal.instrument, proposal.direction, decision.approved_quantity, proposal.proposed_entry, proposal.proposed_stop, proposal.proposed_target, proposal.lot_size, proposal.timestamp, proposal.source, "PENDING", decision, proposal.evidence_reference)
@@ -124,6 +135,8 @@ class PaperTradingEngine:
         return order
 
     def fill_order(self, order_id, fill_price, timestamp, source, is_fresh=True):
+        if self.halted:
+            raise ValueError("Paper execution is halted by the kill switch.")
         order = self._order(order_id, "PENDING")
         if not is_fresh:
             raise ValueError("Paper fill rejected: market data is stale.")
@@ -146,9 +159,10 @@ class PaperTradingEngine:
         position = self._position(position_id, "OPEN")
         if not is_fresh:
             raise ValueError("Paper mark rejected: market data is stale.")
-        position.current_price = _decimal(price)
-        if position.current_price <= 0:
+        price = _decimal(price)
+        if price <= 0:
             raise ValueError("Paper market price must be positive.")
+        position.current_price = price
         position.unrealized_pnl = self._pnl(position.direction, position.entry_price, position.current_price, position.quantity)
         self._refresh_unrealized()
         return position

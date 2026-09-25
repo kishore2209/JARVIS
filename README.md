@@ -69,3 +69,10 @@ The frontend targets `http://127.0.0.1:8000` by default.
 - `docs/ARCHITECTURE.md`
 - `docs/ROADMAP.md`
 - `docs/releases/v1.0.0.md`
+
+## Data pipeline implementation update
+
+Historical CSV/JSON analysis is available through the CLI, API and Analysis dashboard.
+Runtime data selection supports MOCK, FILE and read-only ANGEL_ONE; the default is
+still synthetic demo data. See [data setup](docs/DATA_SETUP.md) and the explicit
+[implementation gaps](docs/IMPLEMENTATION_STATUS.md). This is not full SRD completion.
