@@ -30,18 +30,21 @@ class JarvisOrchestrator:
             if request.request_type in {"MARKET_CONTEXT","UNDERLYING_ANALYSIS","FULL_ANALYSIS"}:
                 audit("RESOLVE_DATA","STARTED","Resolving provider candles")
                 if self.provider is None: raise ValueError("A market-data provider is required.")
-                candles=self.provider.get_candles(request.instrument,request.exchange,request.token,240); done.append("RESOLVE_DATA");audit("RESOLVE_DATA","COMPLETED","Normalized candles resolved")
+                candles=self.provider.get_candles(request.instrument,request.exchange,request.token,240, **({"interval":request.interval} if getattr(self.provider,"supports_interval",False) else {})); done.append("RESOLVE_DATA");audit("RESOLVE_DATA","COMPLETED","Normalized candles resolved")
+                warnings.append("NIFTY_AND_SECTOR_CONTEXT = NOT_AVAILABLE; instrument context is not independent market confirmation.")
+                if getattr(self.provider,"source",None)=="MOCK": warnings.append("DEMO_DATA_ONLY; not current market prices.")
+                if not candles[-1].is_fresh: warnings.append("STALE_OR_HISTORICAL_DATA; not suitable for current trade decisions.")
                 if request.request_type in {"MARKET_CONTEXT","FULL_ANALYSIS"}: values["market_context"]=MarketContextEngine().analyze(candles);done.append("MARKET_CONTEXT");audit("MARKET_CONTEXT","COMPLETED","Context computed")
-                if request.request_type in {"UNDERLYING_ANALYSIS","FULL_ANALYSIS"}: values["underlying_analysis"]=UnderlyingAnalysisEngine().analyze(candles,values.get("market_context"));done.append("UNDERLYING_ANALYSIS");audit("UNDERLYING_ANALYSIS","COMPLETED","Underlying analysis computed")
+                if request.request_type in {"UNDERLYING_ANALYSIS","FULL_ANALYSIS"}: values["underlying_analysis"]=UnderlyingAnalysisEngine().analyze(candles);done.append("UNDERLYING_ANALYSIS");audit("UNDERLYING_ANALYSIS","COMPLETED","Underlying analysis computed")
                 if request.request_type=="FULL_ANALYSIS":
-                    values["strategy_evidence"]=MultiStrategyEngine().analyze(candles,values["underlying_analysis"],values.get("market_context"));done.append("MULTI_STRATEGY");audit("MULTI_STRATEGY","COMPLETED","Evidence computed")
-                    values["confluence_analysis"]=ConfluenceEngine().analyze(values["underlying_analysis"],values["strategy_evidence"],values.get("market_context"),request.parameters.get("fno_analysis") if request.parameters else None);done.append("CONFLUENCE");audit("CONFLUENCE","COMPLETED","Evidence aggregated")
+                    values["strategy_evidence"]=MultiStrategyEngine().analyze(candles,values["underlying_analysis"],historical=getattr(self.provider,"source",None)=="LOCAL_FILE");done.append("MULTI_STRATEGY");audit("MULTI_STRATEGY","COMPLETED","Evidence computed")
+                    values["confluence_analysis"]=ConfluenceEngine().analyze(values["underlying_analysis"],values["strategy_evidence"],None,request.parameters.get("fno_analysis") if request.parameters else None);done.append("CONFLUENCE");audit("CONFLUENCE","COMPLETED","Evidence aggregated")
                     skipped.append("FNO_INTELLIGENCE");warnings.append("FNO_DATA = NOT_AVAILABLE")
             elif request.request_type=="RISK_VALIDATE":
                 proposal=request.parameters.get("proposal"); values["risk_decision"]=RiskFirewall(request.parameters.get("risk_config")).evaluate(proposal,request.parameters.get("portfolio_context"));done.append("RISK_VALIDATION");audit("RISK_VALIDATION","COMPLETED","Risk validated")
             elif request.request_type=="PAPER_EXECUTE":
                 proposal=request.parameters.get("proposal"); decision=request.parameters.get("risk_decision"); paper=request.parameters.get("paper_engine")
-                if not request.explicit_user_authorization: return self._result(request,started,values,warnings,("AUTHORIZATION_REQUIRED",),done,skipped+["PAPER_EXECUTION"],audits+[AuditEvent(request.timestamp,request.request_id,"PAPER_EXECUTION","AUTHORIZATION_REQUIRED","Explicit authorization required.",request.execution_mode)])
+                if request.explicit_user_authorization is not True: return self._result(request,started,values,warnings,("AUTHORIZATION_REQUIRED",),done,skipped+["PAPER_EXECUTION"],audits+[AuditEvent(request.timestamp,request.request_id,"PAPER_EXECUTION","AUTHORIZATION_REQUIRED","Explicit authorization required.",request.execution_mode)])
                 if not decision or not decision.approved: return self._result(request,started,values,warnings,("RISK_REJECTED",),done,skipped+["PAPER_EXECUTION"],audits)
                 values["paper_execution_result"]=paper.create_order(proposal,decision);done.append("PAPER_EXECUTION");audit("PAPER_EXECUTION","COMPLETED","Paper order created")
             elif request.request_type=="PORTFOLIO_ANALYSIS": values["portfolio_analysis"]=PortfolioIntelligenceEngine().analyze(request.parameters["account"],request.timestamp,request.parameters.get("sector_map"));done.append("PORTFOLIO_ANALYSIS")
@@ -58,4 +61,4 @@ class JarvisOrchestrator:
         return result
     def _result(self,r,s,v,w,e,d,k,a):
         fresh=getattr(v.get("underlying_analysis") or v.get("market_context"),"is_fresh",None); source=getattr(v.get("underlying_analysis") or v.get("market_context"),"source",None)
-        return JarvisResult(r.request_id,r.request_type,"COMPLETED" if not e else e[0],s,r.timestamp,r.instrument,r.execution_mode,warnings=tuple(w),errors=tuple(e),stages_completed=tuple(d),stages_skipped=tuple(k),data_sources=(source,) if source else (),is_fresh=fresh,data_completeness="COMPLETE" if not e else "PARTIAL",audit_events=tuple(a),**v)
+        return JarvisResult(r.request_id,r.request_type,"COMPLETED" if not e else e[0],s,r.timestamp,r.instrument,r.execution_mode,warnings=tuple(w),errors=tuple(e),stages_completed=tuple(d),stages_skipped=tuple(k),data_sources=(source,) if source else (),is_fresh=fresh,data_completeness="COMPLETE" if not e and not w else "PARTIAL",audit_events=tuple(a),**v)

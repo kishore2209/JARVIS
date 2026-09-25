@@ -10,8 +10,8 @@ class MultiStrategyEngine:
         self.analysis_engine = analysis_engine or UnderlyingAnalysisEngine()
         self.strategies = strategies or [TrendFollowingStrategy(), SupportResistanceStrategy(), BreakoutStrategy(), VolumeConfirmationStrategy(), DemandSupplyStrategy(), FibonacciStrategy(), PatternStrategy()]
 
-    def analyze(self, candles, underlying_analysis=None, market_context=None, fno_intelligence=None):
-        self._validate_candles(candles)
+    def analyze(self, candles, underlying_analysis=None, market_context=None, fno_intelligence=None, historical=False):
+        self._validate_candles(candles, historical=historical)
         analysis = underlying_analysis or self.analysis_engine.analyze(candles, market_context)
         results = []
         for strategy in self.strategies:
@@ -22,11 +22,11 @@ class MultiStrategyEngine:
         return tuple(results)
 
     @staticmethod
-    def _validate_candles(candles):
+    def _validate_candles(candles, historical=False):
         if len(candles) < 200:
             raise ValueError("At least 200 normalized candles are required.")
         timestamps = [candle.timestamp for candle in candles]
         if timestamps != sorted(timestamps) or len(set(timestamps)) != len(timestamps):
             raise ValueError("Candles must be chronological and have unique timestamps.")
-        if not all(candle.is_fresh for candle in candles):
+        if not historical and not candles[-1].is_fresh:
             raise ValueError("Stale candles cannot be analyzed as current context.")

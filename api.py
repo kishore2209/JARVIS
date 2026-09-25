@@ -20,6 +20,8 @@ from market.paper_trading import PaperAccount, PaperTradingEngine
 from market.ohlcv import OHLCV
 from market.providers.mock import MockMarketDataProvider
 from market.risk import TradeProposal
+from market.data_pipeline import parse_candle, number, validate_candles, aware_timestamp
+from market.historical_analysis import analyze_file_text
 
 runtime = create_runtime()
 observability = runtime.observability
@@ -168,6 +170,28 @@ def chat(payload:dict):
 	request=ConversationRequest(payload.get("conversation_id","API"),payload.get("request_id","CHAT"),_timestamp(payload.get("timestamp")),payload.get("text",""),payload.get("language","en"),payload.get("context"),"API",payload.get("explicit_user_authorization",False))
 	response=conversation.handle(request)
 	return {"request_id":response.request_id,"conversation_id":request.conversation_id,"status":response.status,"intent":response.intent,"execution_mode":response.execution_mode,"message":response.message,"follow_up_required":response.follow_up_required,"missing_fields":list(response.missing_fields),"warnings":list(response.warnings),"structured_result":serialize(response.structured_result)}
+@app.post("/api/v1/analysis/file")
+def historical_file(payload: dict):
+	return analyze_file_text(payload.get("content"), payload.get("format", "json"), payload.get("interval"))
+
+@app.get("/api/v1/data/status")
+def data_status():
+	return {"provider": runtime.config.data_provider, "demo_data": runtime.config.data_provider == "MOCK", "configured_interval": runtime.config.candle_interval, "live_execution_supported": False, "connection_verified": False}
+
+@app.get("/api/v1/paper/kill-switch")
+def paper_kill_switch_status():
+	return {"status": "OK", "halted": paper_engine.halted, "persistent": paper_engine.safety.path is not None}
+
+@app.post("/api/v1/paper/kill-switch")
+def paper_kill_switch(payload: dict):
+	if type(payload.get("halted")) is not bool:
+		raise ValueError("halted must be boolean")
+	if payload["halted"] is False and payload.get("explicit_user_authorization") is not True:
+		raise ValueError("Explicit authorization is required to resume paper execution.")
+	paper_engine.set_halted(payload["halted"])
+	observability.record("PAPER", "KILL_SWITCH", "HALTED" if paper_engine.halted else "RESUMED", message="Paper execution switch changed")
+	return {"status": "OK", "halted": paper_engine.halted, "persistent": paper_engine.safety.path is not None, "live_execution_supported": False}
+
 @app.post("/api/v1/analysis/market-context")
 def market_context(payload:dict): payload["request_type"]="MARKET_CONTEXT";return service.request(payload)
 @app.post("/api/v1/analysis/underlying")
@@ -201,27 +225,21 @@ def backtest(payload:dict):
 	if not candles: raise ValueError("At least one historical candle is required.")
 	timestamps = [candle.timestamp for candle in candles]
 	if timestamps != sorted(timestamps) or len(set(timestamps)) != len(timestamps): raise ValueError("Historical candles must be chronological with unique timestamps.")
+	# Historical replay controls its own event clock; wall-clock freshness is never implied.
+	validate_candles(candles, payload.get("interval", "15m"), historical=True)
+	candles = tuple(__import__("dataclasses").replace(candle, is_fresh=True) for candle in candles)
 	engine = HistoricalReplayEngine(BacktestConfig(warmup_candles=payload.get("warmup_candles", 200)))
 	return service.request({"request_type":"BACKTEST","execution_mode":"HISTORICAL_REPLAY","timestamp":candles[-1].timestamp if candles else _timestamp(payload.get("timestamp")),"parameters":{"backtest_engine":engine,"candles":candles}})
 
 def _timestamp(value):
-	if value is None: return datetime.now(timezone.utc)
-	timestamp = datetime.fromisoformat(value) if isinstance(value,str) else value
-	if timestamp.tzinfo is None: raise ValueError("timestamp must be timezone-aware.")
-	return timestamp
+	return datetime.now(timezone.utc) if value is None else aware_timestamp(value)
 def _proposal(payload):
 	required=("instrument","direction","proposed_entry","proposed_stop","proposed_target","capital_available","risk_per_trade_percent","lot_size")
 	missing=[name for name in required if name not in payload]
 	if missing: raise ValueError(f"Missing proposal fields: {', '.join(missing)}.")
-	return TradeProposal(payload["instrument"],payload["direction"],payload["proposed_entry"],payload["proposed_stop"],payload["proposed_target"],payload["capital_available"],payload["risk_per_trade_percent"],int(payload["lot_size"]),payload.get("quantity_requested"),_timestamp(payload.get("timestamp")),"API",True)
+	return TradeProposal(payload["instrument"],payload["direction"],payload["proposed_entry"],payload["proposed_stop"],payload["proposed_target"],payload["capital_available"],payload["risk_per_trade_percent"],number(payload["lot_size"], "lot_size", integer=True),(number(payload["quantity_requested"], "quantity_requested", integer=True) if payload.get("quantity_requested") is not None else None),_timestamp(payload.get("timestamp")),"API",True)
 def _historical_candle(payload):
-	required=("symbol","exchange","timestamp","open","high","low","close","volume","source")
-	missing=[name for name in required if name not in payload]
-	if missing: raise ValueError(f"Missing candle fields: {', '.join(missing)}.")
-	timestamp=_timestamp(payload["timestamp"])
-	candle=OHLCV(payload["symbol"],payload["exchange"],timestamp,float(payload["open"]),float(payload["high"]),float(payload["low"]),float(payload["close"]),int(payload["volume"]),payload["source"],True)
-	if candle.low>candle.high or min(candle.open,candle.high,candle.low,candle.close)<0 or candle.volume<0: raise ValueError("Invalid historical OHLCV values.")
-	return candle
+	return parse_candle(payload)
 
 def create_app(config: RuntimeConfig | None = None):
 	"""Return the composed FastAPI app; import-time composition remains backward compatible."""

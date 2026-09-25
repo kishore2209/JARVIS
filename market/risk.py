@@ -1,10 +1,18 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, InvalidOperation
+import hashlib
+import json
 
 
 def _decimal(value):
-    return value if isinstance(value, Decimal) else Decimal(str(value))
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as error:
+        raise ValueError("Expected a finite decimal number.") from error
+    if not result.is_finite():
+        raise ValueError("Expected a finite decimal number.")
+    return result
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,13 @@ class RiskDecision:
     checks: tuple
     timestamp: datetime
     source: str
+    proposal_fingerprint: str = ""
+
+
+def proposal_fingerprint(proposal):
+    values = {name: str(getattr(proposal, name)) for name in proposal.__dataclass_fields__ if name != "evidence_reference"}
+    values["evidence_reference"] = repr(proposal.evidence_reference)
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
 
 class RiskFirewall:
@@ -103,14 +118,16 @@ class RiskFirewall:
         check("positive_prices", valid_prices, "Entry, stop, and target must be positive.")
         valid_direction = proposal.direction in {"LONG", "SHORT"}
         check("valid_direction", valid_direction, "Direction must be LONG or SHORT.")
-        valid_lot = isinstance(proposal.lot_size, int) and proposal.lot_size > 0
+        valid_lot = type(proposal.lot_size) is int and proposal.lot_size > 0
         check("valid_lot_size", valid_lot, "Lot size must be a positive integer.")
+        valid_sizing = proposal.capital_available > 0 and 0 < proposal.risk_per_trade_percent <= self.config.max_risk_per_trade_percent and (proposal.quantity_requested is None or (type(proposal.quantity_requested) is int and proposal.quantity_requested > 0))
+        check("valid_sizing", valid_sizing, "Capital, risk percentage and requested quantity must be valid positive values within policy.")
         geometry = valid_prices and valid_direction and ((proposal.direction == "LONG" and proposal.proposed_stop < proposal.proposed_entry < proposal.proposed_target) or (proposal.direction == "SHORT" and proposal.proposed_target < proposal.proposed_entry < proposal.proposed_stop))
         check("valid_geometry", geometry, "Proposal price geometry is invalid for its direction.")
         fresh = self._is_fresh(proposal)
         check("fresh_data", fresh or not self.config.require_fresh_data, "Proposal data is stale or marked not fresh.")
         self._evidence_check(proposal, checks, reasons, warnings)
-        if not (valid_prices and valid_direction and valid_lot and geometry):
+        if not (valid_prices and valid_direction and valid_lot and geometry and valid_sizing):
             return self._decision(proposal, reasons, warnings, checks, None, None, None, None, None, 0)
 
         risk = abs(proposal.proposed_entry - proposal.proposed_stop)
@@ -134,12 +151,12 @@ class RiskFirewall:
 
     def _is_fresh(self, proposal):
         now = self._clock().astimezone(timezone.utc)
-        return proposal.is_fresh and now - proposal.timestamp <= self.config.maximum_data_age
+        return proposal.is_fresh is True and timedelta(0) <= now - proposal.timestamp <= self.config.maximum_data_age
 
     def _evidence_check(self, proposal, checks, reasons, warnings):
         evidence = proposal.evidence_reference
         if evidence is None:
-            warnings.append("Confluence evidence is not available."); checks.append(("evidence_available", "NOT_AVAILABLE")); return
+            (reasons if self.config.reject_incomplete_evidence else warnings).append("Confluence evidence is not available."); checks.append(("evidence_available", "FAIL" if self.config.reject_incomplete_evidence else "NOT_AVAILABLE")); return
         complete = getattr(evidence, "data_completeness", "PARTIAL") == "COMPLETE"
         fresh = getattr(evidence, "is_fresh", False)
         passed = complete and fresh
@@ -176,4 +193,4 @@ class RiskFirewall:
         if not passed: reasons.append(reason)
 
     def _decision(self, proposal, reasons, warnings, checks, risk, reward, ratio, allowed, raw, quantity, value=None, monetary_risk=None):
-        return RiskDecision(proposal.instrument, not reasons, tuple(reasons), tuple(warnings), risk, reward, ratio, allowed, raw, quantity, proposal.lot_size, value, monetary_risk, "FRESH" if self._is_fresh(proposal) else "STALE", "COMPLETE" if not reasons and not warnings else "PARTIAL", tuple(checks), proposal.timestamp, proposal.source)
+        return RiskDecision(proposal.instrument, not reasons, tuple(reasons), tuple(warnings), risk, reward, ratio, allowed, raw, quantity, proposal.lot_size, value, monetary_risk, "FRESH" if self._is_fresh(proposal) else "STALE", "COMPLETE" if not reasons and not warnings else "PARTIAL", tuple(checks), proposal.timestamp, proposal.source, proposal_fingerprint(proposal))
