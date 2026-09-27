@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { VoiceReactor } from './VoiceReactor';
 import { BrowserSpeechRecognitionAdapter } from '../voice/SpeechRecognitionAdapter';
 import { BrowserSpeechSynthesisAdapter, safeSpeechText } from '../voice/SpeechSynthesisAdapter';
 import type { SpeechRecognitionAdapter, SpeechSynthesisAdapter, VoiceErrorCode, VoiceLanguage, VoiceState } from '../voice/types';
@@ -84,7 +85,7 @@ export function VoicePanel({submitChat, recognition: injectedRecognition, synthe
   };
 
   return <div className="panel voice-panel" aria-label="Voice controls">
-    <h3>Voice Interface</h3>
+    <VoiceReactor state={state}/><h3>Voice Interface</h3>
     <p role="status">Microphone: {state}</p>
     <p>Voice Input: {recognition.isSupported() ? 'AVAILABLE' : 'UNAVAILABLE'} | Voice Output: {synthesis.isSupported() ? 'AVAILABLE' : 'UNAVAILABLE'}</p>
     <label>Language<select aria-label="Voice language" value={language} onChange={event => setLanguage(event.target.value as VoiceLanguage)}><option value="en-IN">English</option><option value="te-IN">Telugu</option><option value="">Auto / browser default</option></select></label>
