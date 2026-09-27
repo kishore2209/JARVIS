@@ -8,3 +8,13 @@ describe('ResultPanel',()=>{
  it('renders safe backend messages and empty state',()=>{const {rerender}=render(<ResultPanel data={{message:'Request unavailable.'}}/>);expect(screen.getByText('Request unavailable.')).toBeTruthy();rerender(<ResultPanel data={{}}/>);expect(screen.getByText('NOT_AVAILABLE')).toBeTruthy()});
  it('uses accessible table headings for strategy evidence',()=>{render(<ResultPanel data={{result:{strategy_evidence:[{strategy_name:'TREND',direction:'BULLISH',evidence_strength:'HIGH'}]}}}/>);expect(screen.getByRole('columnheader',{name:'Strategy'})).toBeTruthy()});
 });
+describe('Evidence and failure visibility',()=>{
+ it('shows non-FNO warnings and errors alongside partial analysis',()=>{
+  render(<ResultPanel data={{status:'ERROR',message:'Provider failed',result:{underlying_analysis:{price:123,source:'MOCK',is_fresh:false},warnings:['STALE_DATA'],errors:['PROVIDER_UNAVAILABLE']}}}/>);
+  for(const text of ['Provider failed','STALE_DATA','PROVIDER_UNAVAILABLE','MOCK','123','false']) expect(screen.getByText(text)).toBeTruthy();
+ });
+ it('preserves reasons, conflicts and invalidations without generating trade levels',()=>{
+  render(<ResultPanel data={{result:{strategy_evidence:[{strategy_name:'TREND',direction:'BULLISH',evidence_strength:'HIGH',evidence:['Above EMA'],conflicting_evidence:['Weak volume'],invalidation_conditions:['Structure fails'],source:'PROVIDER',is_fresh:true}]}}}/>);
+  for(const text of ['Above EMA','Weak volume','Structure fails']) expect(screen.getByText(text)).toBeTruthy();
+ });
+});

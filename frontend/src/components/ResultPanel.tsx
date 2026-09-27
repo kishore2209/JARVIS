@@ -2,6 +2,7 @@ type Value = string | number | boolean | null | undefined;
 type Data = Record<string, unknown>;
 
 const labels: Record<string, string> = {
+  source: 'Data source', price: 'Price', ema20: 'EMA 20', ema50: 'EMA 50', ema200: 'EMA 200', rsi: 'RSI', vwap: 'VWAP', structure: 'Structure', momentum: 'Momentum', volume_condition: 'Volume',
   status: 'Status', instrument: 'Instrument', timestamp: 'Timestamp', execution_mode: 'Execution mode', is_fresh: 'Freshness', trend: 'Trend',
   directional_bias: 'Confluence bias', evidence_quality: 'Evidence quality', bullish_score: 'Bullish score',
   bearish_score: 'Bearish score', net_evidence_score: 'Net score', market_context_alignment: 'Alignment',
@@ -27,6 +28,12 @@ function flattenValues(source: Data | undefined): Array<[string, Value]> {
   });
 }
 
+function Messages({title, value}: {title: string; value: unknown}) {
+  const entries = (Array.isArray(value) ? value : [value]).filter(item => typeof item === 'string' && item.trim());
+  if (!entries.length) return null;
+  return <div className="result-alert"><h3>{title}</h3><ul>{entries.map((item, index) => <li key={index}>{String(item)}</li>)}</ul></div>;
+}
+
 export function LoadingState(){return <p role="status">LOADING...</p>}
 export function EmptyState(){return <p className="empty">NOT_AVAILABLE</p>}
 export function ResultPanel({data}:{data:Data}){
@@ -44,5 +51,5 @@ export function ResultPanel({data}:{data:Data}){
     return <div className="metric" key={key}><small>{labels[rawKey] ?? rawKey}</small><strong>{String(value)}</strong></div>;
   });
   const strategies=(result.strategy_evidence||[]) as Data[];
-  return <div className="result"><div className="metrics">{fields}</div>{Boolean(result.message)&&<p className="empty">{String(result.message)}</p>}{confluence&&<section><h3>Confluence</h3><div className="metrics">{Object.keys(labels).filter(key=>confluence[key]!==undefined).map(key=><div className="metric" key={key}><small>{labels[key]}</small><strong>{String(confluence[key] as Value)}</strong></div>)}</div></section>}{strategies.length>0&&<section><h3>Strategy Evidence</h3><table><thead><tr><th>Strategy</th><th>Direction</th><th>Strength</th></tr></thead><tbody>{strategies.map((item,index)=><tr key={index}><td>{String(item.strategy_name)}</td><td>{String(item.direction)}</td><td>{String(item.evidence_strength)}</td></tr>)}</tbody></table></section>}{Boolean(result.warnings)&&String(result.warnings).includes('FNO_DATA')&&<p className="empty">F&O DATA NOT AVAILABLE</p>}</div>
+  return <div className="result"><Messages title="Warnings" value={result.warnings}/><Messages title="Errors" value={result.errors}/>{data.status === 'ERROR' && result !== data && <Messages title="Request failed" value={data.message || data.code}/>}<div className="metrics">{fields}</div>{Boolean(result.message)&&<p className="empty">{String(result.message)}</p>}{confluence&&<section><h3>Confluence</h3><div className="metrics">{Object.keys(labels).filter(key=>confluence[key]!==undefined).map(key=><div className="metric" key={key}><small>{labels[key]}</small><strong>{String(confluence[key] as Value)}</strong></div>)}</div></section>}{strategies.length>0&&<section><h3>Strategy Evidence</h3><table><thead><tr><th>Strategy</th><th>Direction</th><th>Strength</th></tr></thead><tbody>{strategies.map((item,index)=><tr key={index}><td>{String(item.strategy_name)}</td><td>{String(item.direction)}</td><td>{String(item.evidence_strength)}</td></tr>)}</tbody></table>{strategies.map((item,index)=><details className="evidence-detail" key={index}><summary>{String(item.strategy_name)} — reasons and invalidation</summary><p>Source: {String(item.source ?? 'NOT_AVAILABLE')} · Fresh: {String(item.is_fresh ?? 'NOT_AVAILABLE')} · Alignment: {String(item.context_alignment ?? 'NOT_AVAILABLE')}</p><Messages title="Supporting evidence" value={item.evidence}/><Messages title="Conflicting evidence" value={item.conflicting_evidence}/><Messages title="Invalidation conditions" value={item.invalidation_conditions}/></details>)}</section>}{Boolean(result.warnings)&&String(result.warnings).includes('FNO_DATA')&&<p className="empty">F&O DATA NOT AVAILABLE</p>}</div>
 }
