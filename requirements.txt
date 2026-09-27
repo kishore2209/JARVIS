@@ -6,3 +6,4 @@ smartapi-python
 fastapi
 uvicorn
 google-genai
+httpx
