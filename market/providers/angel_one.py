@@ -1,5 +1,7 @@
 import os
 import re
+from math import isfinite
+from threading import RLock
 from datetime import datetime, timedelta, timezone
 
 from market.ohlcv import MarketQuote, OHLCV
@@ -36,12 +38,15 @@ class AngelOneMarketDataProvider(MarketDataProvider):
     }
     _BROKER_TIMEZONE = timezone(timedelta(hours=5, minutes=30), "Asia/Kolkata")
 
-    def __init__(self, client=None, clock=None):
+    def __init__(self, client=None, clock=None, auto_login=False, instrument_resolver=None):
         self.api_key = os.getenv("ANGEL_ONE_API_KEY")
         self.client_code = os.getenv("ANGEL_ONE_CLIENT_CODE")
         self.pin = os.getenv("ANGEL_ONE_PIN")
         self.totp = os.getenv("ANGEL_ONE_TOTP")
         self.client = client
+        self.auto_login = auto_login
+        self.instrument_resolver = instrument_resolver
+        self._session_lock = RLock()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def login(self):
@@ -52,7 +57,7 @@ class AngelOneMarketDataProvider(MarketDataProvider):
         except ImportError as error:
             raise RuntimeError("Install smartapi-python to use Angel One market data.") from error
 
-        self.client = SmartConnect(api_key=self.api_key)
+        self.client = SmartConnect(api_key=self.api_key, timeout=10)
         try:
             response = self.client.generateSession(self.client_code, self.pin, self.totp)
         except Exception as error:
@@ -60,25 +65,37 @@ class AngelOneMarketDataProvider(MarketDataProvider):
             raise RuntimeError("Angel One login failed.") from error
         if not isinstance(response, dict) or not response.get("status"):
             self.client = None
-            message = response.get("message", "unknown authentication error") if isinstance(response, dict) else "invalid login response"
-            raise RuntimeError(f"Angel One login failed: {message}")
+            raise RuntimeError("Angel One login failed; check server-side credentials and current TOTP.")
         return response
 
     def _require_client(self):
-        if self.client is None:
-            raise RuntimeError("Call login() before requesting Angel One market data.")
+        with self._session_lock:
+            if self.client is None and self.auto_login:
+                self.login()
+            if self.client is None:
+                raise RuntimeError("Call login() before requesting Angel One market data.")
 
     def get_ltp(self, symbol, exchange, token=None):
-        self._require_client()
-        response = self.client.ltpData(exchange, symbol, token)
-        return float(response["data"]["ltp"])
+        return self.get_quote(symbol, exchange, token).ltp
 
     def get_quote(self, symbol, exchange, token=None):
+        if self.instrument_resolver is not None:
+            symbol, exchange, token = self.instrument_resolver.resolve(symbol, exchange, token)
         self._require_client()
-        response = self.client.quoteData(exchange, symbol, token)["data"]
+        if not token: raise ValueError('Explicit instrument token required')
+        try:
+            raw = self.client.ltpData(exchange, symbol, str(token))
+        except Exception as error:
+            raise RuntimeError('Angel One LTP request failed') from error
+        if not isinstance(raw, dict) or raw.get('status') is not True or not isinstance(raw.get('data'), dict):
+            raise ValueError('Invalid Angel One LTP response')
+        response = raw['data']; price = float(response['ltp'])
+        if not isfinite(price) or price <= 0: raise ValueError('Invalid Angel One price')
+        if response.get('symboltoken') is not None and str(response['symboltoken']) != str(token):
+            raise ValueError('Quote instrument mismatch')
         return MarketQuote(
             symbol=symbol, exchange=exchange, token=str(token),
-            timestamp=datetime.now(timezone.utc), ltp=float(response["ltp"]),
+            timestamp=self._utc_now(), ltp=price, is_fresh=False,
             source=self.source, open=float(response.get("open", 0)),
             high=float(response.get("high", 0)), low=float(response.get("low", 0)),
             close=float(response.get("close", 0)), volume=int(response.get("tradeVolume", 0)),
@@ -89,13 +106,15 @@ class AngelOneMarketDataProvider(MarketDataProvider):
 
         SmartAPI timestamps without an offset are interpreted as Asia/Kolkata time.
         """
+        if self.instrument_resolver is not None:
+            _, exchange, token = self.instrument_resolver.resolve(symbol, exchange, token)
         self._require_client()
         if interval not in self.INTERVALS:
             raise ValueError(f"Unsupported interval: {interval}.")
         if not token:
             raise ValueError("A symbol token is required for historical candles.")
-        if not isinstance(limit, int) or limit <= 0:
-            raise ValueError("limit must be a positive integer.")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer from 1 to 500.")
 
         retrieved_at = self._utc_now()
         to_time = self._normalize_request_time(to_time or retrieved_at)
@@ -118,8 +137,7 @@ class AngelOneMarketDataProvider(MarketDataProvider):
             ) from error
 
         if not isinstance(response, dict) or not response.get("status"):
-            message = response.get("message", "unknown API error") if isinstance(response, dict) else "invalid API response"
-            raise RuntimeError(f"Angel One historical candle API error: {message}")
+            raise RuntimeError("Angel One historical candle API rejected the request.")
         rows = response.get("data")
         if not isinstance(rows, list) or not rows:
             raise ValueError("Angel One historical candle response contained no candle rows.")
@@ -127,6 +145,8 @@ class AngelOneMarketDataProvider(MarketDataProvider):
         candles = {}
         for row in rows:
             candle = self._normalize_candle_row(row, symbol, exchange, retrieved_at, interval)
+            if candle.timestamp in candles and candles[candle.timestamp] != candle:
+                raise ValueError('Conflicting duplicate candle')
             candles[candle.timestamp] = candle
         return [candles[timestamp] for timestamp in sorted(candles)][-limit:]
 
@@ -139,8 +159,9 @@ class AngelOneMarketDataProvider(MarketDataProvider):
             volume = int(float(row[5]))
         except (TypeError, ValueError) as error:
             raise ValueError("Malformed Angel One candle values.") from error
-        if volume < 0 or min(open_price, high, low, close) < 0 or low > high:
+        if not all(isfinite(v) for v in (open_price,high,low,close,float(row[5]))) or float(row[5]) != volume or volume < 0 or min(open_price, high, low, close) <= 0 or low > min(open_price,close) or high < max(open_price,close):
             raise ValueError("Invalid Angel One OHLCV values.")
+        if timestamp > retrieved_at: raise ValueError('Future Angel One candle timestamp')
         is_fresh = timestamp <= retrieved_at and retrieved_at - timestamp <= self._FRESHNESS_WINDOW[interval]
         return OHLCV(symbol, exchange, timestamp, open_price, high, low, close, volume, self.source, is_fresh)
 

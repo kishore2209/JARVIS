@@ -13,3 +13,9 @@ frontend/.vite/
 frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+
+validation/
+
+# User-supplied source text and encrypted snapshots are not repository artifacts.
+docs/srd/source-v3.txt
+backups/

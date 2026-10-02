@@ -34,6 +34,10 @@ def main():
         check("Status endpoint", status.status_code == 200)
         check("Readiness endpoint", ready.status_code == 200 and ready.json()["status"] == "READY")
         check("LIVE readiness", live.json()["status"] == "NOT_READY")
+        real = client.get("/api/v1/readiness?workflow=REAL_PROVIDER_ANALYSIS").json()
+        check("Real data not certified by mock readiness", real["status"] == "NOT_READY" and not real["requirements"]["live_validation_passed"])
+        unknown = client.get("/api/v1/readiness?workflow=TYPO").json()
+        check("Unknown workflow not silently ready", unknown["status"] == "NOT_READY" and unknown["reasons"] == ["UNKNOWN_WORKFLOW"])
         body = diagnostics.json()
         check("Diagnostics safe", "GEMINI_API_KEY" not in str(body) and "fake" not in str(body).lower())
         chat = client.post("/api/v1/chat", json={"text": "Analyse JARVIS", "timestamp": datetime.now(timezone.utc).isoformat()})
@@ -43,6 +47,6 @@ def main():
         check("Correlation header preserved", "X-Content-Type-Options" in error.headers)
     check("Graceful shutdown", True)
     if os.path.exists(path): os.remove(path)
-    print("TEST SUMMARY: 14/14 PASS")
+    print("TEST SUMMARY: 16/16 PASS")
 
 if __name__ == "__main__": main()

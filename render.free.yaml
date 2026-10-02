@@ -1,0 +1,30 @@
+# Free demo only. SQLite records are temporary and lost on restart or sleep.
+# Idle sleep prevents reliable scheduled jobs. Not a production deployment.
+# Verify workspace billing and usage limits before provisioning.
+services:
+- type: web
+  name: jarvis-free-demo
+  runtime: python
+  plan: free
+  region: singapore
+  numInstances: 1
+  branch: codex/render-free-demo
+  buildCommand: pip install -r requirements.txt && npm --prefix frontend ci && npm --prefix frontend run build
+  startCommand: python -m jarvis_cloud
+  healthCheckPath: /health
+  autoDeployTrigger: 'off'
+  envVars:
+  - key: JARVIS_ENV
+    value: paper
+  - key: JARVIS_DB_ENABLED
+    value: 'true'
+  - key: JARVIS_DB_PATH
+    value: /tmp/jarvis-free-demo/jarvis.db
+  - key: JARVIS_API_TOKEN
+    generateValue: true
+  - key: JARVIS_LLM_ENABLED
+    value: 'false'
+  - key: JARVIS_MARKET_PROVIDER
+    value: MOCK
+  - key: JARVIS_LOG_LEVEL
+    value: INFO

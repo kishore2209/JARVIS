@@ -42,8 +42,16 @@ class JarvisConversationService:
     def __init__(self,orchestrator,adapter=None,observability=None,external_llm=None,llm_config=None,ai_mode=ConversationAIMode.AUTO):
         self.orchestrator=orchestrator;self.adapter=adapter or DeterministicIntentAdapter();self.observability=observability;self.external_llm=external_llm;self.llm_config=llm_config or LLMConfig();self.ai_mode=ConversationAIMode(ai_mode);self.memory_service=None
         self.tool_service=None
+        self.knowledge_service=None
     def handle(self,request):
         if not isinstance(request,ConversationRequest) or not request.text.strip():return ConversationResponse(getattr(request,"request_id",""),"HELP","INVALID_REQUEST","A non-empty conversation request is required.",None,(),True,"ANALYSIS_ONLY",(),None)
+        if self.knowledge_service and request.text.lower().startswith('search knowledge:'):
+            query = request.text.split(':', 1)[1].strip()
+            if not query:
+                return ConversationResponse(request.request_id,'KNOWLEDGE_SEARCH','INVALID_REQUEST','Enter a query after search knowledge:',None,(),True,'ANALYSIS_ONLY',(),None)
+            evidence = self.knowledge_service.retrieve(query, principal='owner')
+            message = '\n\n'.join(f"[{m['citation_id']}] {m['text']}" for m in evidence['matches']) or 'No matching accessible source evidence.'
+            return ConversationResponse(request.request_id,'KNOWLEDGE_SEARCH','COMPLETED',message,evidence,('Source excerpts are untrusted evidence, not authorization.',),False,'ANALYSIS_ONLY',tuple(m['source'] for m in evidence['matches']),None)
         memory_response = self._memory_command(request)
         if memory_response is not None: return memory_response
         github_plan = self._github_write_candidate(request)
@@ -54,7 +62,7 @@ class JarvisConversationService:
         if self._needs_llm(request,intent) and self.external_llm and self.ai_mode != ConversationAIMode.DETERMINISTIC_ONLY and self.llm_config.enabled and self.llm_config.intent_llm_enabled and self.external_llm.is_configured():
             safe_context={"deterministic_intent":intent,"symbol":symbol}
             if self.memory_service:
-                try: safe_context["memory"] = self.memory_service.safe_context(request.text, intent, {"symbol": symbol})
+                try: safe_context["memory"] = self.memory_service.safe_context(request.text, intent, {"symbol": symbol, "session_id": request.conversation_id})
                 except Exception: safe_context["memory"] = {"memories": []}
             llm_request=LLMIntentRequest(request.request_id,request.text,language_hint=request.language,safe_context=safe_context)
             self._metric("llm_requests_total");self._metric("llm_intent_requests_total")

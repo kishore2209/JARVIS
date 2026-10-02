@@ -1,5 +1,7 @@
 .git
 .env
+.env.*
+!.env.example
 .venv
 __pycache__
 *.pyc
@@ -9,3 +11,11 @@ runtime
 frontend/node_modules
 frontend/dist
 .vscode
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+backups
+validation
+docs/srd/source-v3.txt
+.pytest_cache

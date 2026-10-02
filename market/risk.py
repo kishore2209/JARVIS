@@ -4,7 +4,10 @@ from decimal import Decimal, ROUND_DOWN
 
 
 def _decimal(value):
-    return value if isinstance(value, Decimal) else Decimal(str(value))
+    result = value if isinstance(value, Decimal) else Decimal(str(value))
+    if not result.is_finite():
+        raise ValueError("Financial values must be finite")
+    return result
 
 
 @dataclass(frozen=True)
@@ -134,7 +137,7 @@ class RiskFirewall:
 
     def _is_fresh(self, proposal):
         now = self._clock().astimezone(timezone.utc)
-        return proposal.is_fresh and now - proposal.timestamp <= self.config.maximum_data_age
+        return proposal.is_fresh and timedelta(0) <= now - proposal.timestamp <= self.config.maximum_data_age
 
     def _evidence_check(self, proposal, checks, reasons, warnings):
         evidence = proposal.evidence_reference

@@ -1,5 +1,8 @@
+import os
 from datetime import datetime, timezone
 from time import perf_counter
+from uuid import uuid4
+from core.security import install_api_security
 from decimal import Decimal
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -45,10 +48,10 @@ async def lifespan(_app):
 		runtime.close()
 
 app=FastAPI(title="JARVIS API", version=JARVIS_VERSION, lifespan=lifespan)
-app.add_middleware(CORSMiddleware,allow_origins=list(runtime.config.cors_origins),allow_methods=["GET","POST"],allow_headers=["Content-Type","X-Correlation-ID"])
+app.add_middleware(CORSMiddleware,allow_origins=list(runtime.config.cors_origins),allow_methods=["GET","POST","PATCH","DELETE"],allow_headers=["Content-Type","X-Correlation-ID","Authorization"],expose_headers=["X-Correlation-ID"])
 @app.middleware("http")
 async def telemetry(request: Request, call_next):
-	started=perf_counter(); correlation=request.headers.get("X-Correlation-ID","")[:128] or "API"
+	started=perf_counter(); correlation=getattr(request.state,"correlation_id",None) or uuid4().hex
 	request.state.correlation_id=correlation
 	response=await call_next(request)
 	response.headers["X-Content-Type-Options"]="nosniff"
@@ -63,7 +66,7 @@ async def invalid_request(request: Request, error: ValueError):
 async def internal_error(request: Request, error: Exception):
 	return JSONResponse(status_code=500, content={"status":"ERROR","code":"INTERNAL_ERROR","message":"Internal server error.","details":[],"correlation_id":getattr(request.state,"correlation_id","API")})
 @app.get("/health")
-def health(): return {"status":"OK","version":JARVIS_VERSION,"live_execution_supported":False}
+def health(): return {"status":"OK","version":JARVIS_VERSION,"commit":os.getenv("RENDER_GIT_COMMIT", "local"),"live_execution_supported":False}
 @app.get("/api/v1/status")
 def status(): return service.status()
 @app.get("/api/v1/metrics")
@@ -72,7 +75,12 @@ def metrics(): return observability.snapshot()
 def readiness(workflow: str = "DETERMINISTIC_CHAT"):
 	if workflow == "LIVE": return observability.readiness("LIVE")
 	if workflow == "LLM_ENHANCED_CHAT": return observability.readiness("REAL_PROVIDER_ANALYSIS", bool(conversation.external_llm and conversation.external_llm.is_configured() and llm_config.enabled))
-	return observability.readiness("ANALYSIS_ONLY")
+	if workflow == "REAL_PROVIDER_ANALYSIS":
+		configured = runtime.config.market_provider == "ANGEL_ONE" and all(configuration_status().values())
+		return {"workflow": workflow, "ready": False, "status": "NOT_READY", "requirements": {"provider_configured": configured, "live_validation_passed": False}, "reasons": ["LIVE_PROVIDER_NOT_VALIDATED"] if configured else ["REAL_PROVIDER_NOT_CONFIGURED"]}
+	if workflow in {"DETERMINISTIC_CHAT", "ANALYSIS_ONLY"}:
+		return observability.readiness("ANALYSIS_ONLY")
+	return {"workflow": workflow, "ready": False, "status": "NOT_READY", "requirements": {}, "reasons": ["UNKNOWN_WORKFLOW"]}
 @app.get("/api/v1/diagnostics")
 def diagnostics():
 	github = next((item for item in connectors.registry.safe_list() if item["connector_id"] == "github"), {})
@@ -88,11 +96,15 @@ def governance_create(connector_id: str, payload: dict):
 	if set(payload)-allowed: raise ValueError("Unsupported governance field")
 	return {"status":"OK","profile":_governance_payload(governance.create_profile(connector_id,payload.get("allowed_capabilities",()),payload.get("allowed_resources",()),payload.get("environment"),payload.get("enabled",True),payload.get("profile_id")))}
 @app.patch("/api/v1/governance/connectors/{connector_id}/profiles/{profile_id}")
-def governance_update(connector_id: str, profile_id: str, payload: dict): return {"status":"OK","profile":_governance_payload(governance.update_profile(profile_id,payload.get("allowed_capabilities"),payload.get("allowed_resources"),payload.get("enabled")))}
+def governance_update(connector_id: str, profile_id: str, payload: dict):
+	profile=governance.profiles.get(profile_id)
+	if profile is None or profile.connector_id!=connector_id: raise ValueError('PROFILE_NOT_FOUND')
+	if set(payload)-{'allowed_capabilities','allowed_resources','enabled'}: raise ValueError('Unsupported governance field')
+	return {"status":"OK","profile":_governance_payload(governance.update_profile(profile_id,payload.get("allowed_capabilities"),payload.get("allowed_resources"),payload.get("enabled")))}
 @app.delete("/api/v1/governance/connectors/{connector_id}/profiles/{profile_id}")
 def governance_delete(connector_id: str, profile_id: str):
 	if profile_id not in governance.profiles: return {"status":"ERROR","code":"PROFILE_NOT_FOUND","message":"Profile not found.","details":[]}
-	del governance.profiles[profile_id]
+	governance.delete_profile(profile_id,connector_id)
 	return {"status":"OK","deleted":True}
 @app.get("/api/v1/projects")
 def project_list(): return {"status":"OK","workspaces":[_project_workspace_payload(item) for item in projects.list()]}
@@ -115,7 +127,7 @@ def memory_get(memory_id: str):
 	return {"status":"OK","memory":serialize(record)}
 @app.post("/api/v1/memory")
 def memory_create(payload: dict):
-	record = runtime.memory.create(payload.get("category", MemoryCategory.PREFERENCE.value), payload.get("key", ""), payload.get("value", ""), payload.get("scope", MemoryScope.DURABLE.value), payload.get("source", "EXPLICIT_USER"), payload.get("expires_at"), payload.get("tags", ()), payload.get("provenance", ""))
+	record = runtime.memory.create(payload.get("category", MemoryCategory.PREFERENCE.value), payload.get("key", ""), payload.get("value", ""), payload.get("scope", MemoryScope.DURABLE.value), payload.get("source", "EXPLICIT_USER"), payload.get("expires_at"), payload.get("tags", ()), payload.get("provenance", ""), source_refs=payload.get("source_refs",()), source_turns=payload.get("source_turns",()), parent_ids=payload.get("parent_ids",()), session_id=payload.get("session_id"))
 	return {"status":"OK","memory":serialize(record)}
 @app.patch("/api/v1/memory/{memory_id}")
 def memory_update(memory_id: str, payload: dict):
@@ -213,6 +225,8 @@ def _proposal(payload):
 	required=("instrument","direction","proposed_entry","proposed_stop","proposed_target","capital_available","risk_per_trade_percent","lot_size")
 	missing=[name for name in required if name not in payload]
 	if missing: raise ValueError(f"Missing proposal fields: {', '.join(missing)}.")
+	if isinstance(payload["lot_size"], bool) or str(payload["lot_size"]) != str(int(payload["lot_size"])): raise ValueError("Lot size must be an integer")
+	if payload.get("quantity_requested") is not None and type(payload["quantity_requested"]) is not int: raise ValueError("Quantity must be an integer")
 	return TradeProposal(payload["instrument"],payload["direction"],payload["proposed_entry"],payload["proposed_stop"],payload["proposed_target"],payload["capital_available"],payload["risk_per_trade_percent"],int(payload["lot_size"]),payload.get("quantity_requested"),_timestamp(payload.get("timestamp")),"API",True)
 def _historical_candle(payload):
 	required=("symbol","exchange","timestamp","open","high","low","close","volume","source")
@@ -220,7 +234,7 @@ def _historical_candle(payload):
 	if missing: raise ValueError(f"Missing candle fields: {', '.join(missing)}.")
 	timestamp=_timestamp(payload["timestamp"])
 	candle=OHLCV(payload["symbol"],payload["exchange"],timestamp,float(payload["open"]),float(payload["high"]),float(payload["low"]),float(payload["close"]),int(payload["volume"]),payload["source"],True)
-	if candle.low>candle.high or min(candle.open,candle.high,candle.low,candle.close)<0 or candle.volume<0: raise ValueError("Invalid historical OHLCV values.")
+	if not all(__import__("math").isfinite(v) for v in (candle.open,candle.high,candle.low,candle.close)) or candle.low > min(candle.open,candle.close) or candle.high < max(candle.open,candle.close) or min(candle.open,candle.high,candle.low,candle.close)<=0 or candle.volume<0: raise ValueError("Invalid historical OHLCV values.")
 	return candle
 
 def create_app(config: RuntimeConfig | None = None):
@@ -240,3 +254,111 @@ def _governance_payload(profile): return {'profile_id':profile.profile_id,'conne
 def _project_workspace_payload(item): return {'workspace_id':item.workspace_id,'name':item.name,'jira_project_key':item.jira_project_key,'github_owner':item.github_owner,'github_repo':item.github_repo,'enabled':item.enabled,'created_at':item.created_at.isoformat() if item.created_at else None,'updated_at':item.updated_at.isoformat() if item.updated_at else None,'version':item.version}
 def _project_snapshot_payload(snapshot): return {'snapshot_id':snapshot.snapshot_id,'workspace_id':snapshot.workspace_id,'retrieved_at':snapshot.retrieved_at.isoformat(),'jira_available':snapshot.jira_available,'github_available':snapshot.github_available,'partial_result':snapshot.partial_result,'jira_issues':list(snapshot.jira_issues),'github_prs':list(snapshot.github_prs),'github_commits':list(snapshot.github_commits),'links':[item.__dict__ for item in snapshot.links],'unlinked_jira':list(snapshot.unlinked_jira),'unlinked_prs':list(snapshot.unlinked_prs),'warnings':list(snapshot.warnings)}
 def _delivery_payload(analysis): return {'analysis_id':analysis.analysis_id,'workspace_id':analysis.workspace_id,'snapshot_id':analysis.snapshot_id,'retrieved_at':analysis.retrieved_at.isoformat(),'signals':[item.__dict__ for item in analysis.signals],'metrics':analysis.metrics,'activity':list(analysis.activity),'warnings':list(analysis.warnings),'completeness':analysis.completeness}
+
+from personal.api import build_router
+from market.charts import render_chart
+app.include_router(build_router(runtime.personal))
+from core.control_api import build_control_router
+app.include_router(build_control_router(runtime))
+
+@app.get("/api/v1/memory/{memory_id}/history")
+def memory_history(memory_id: str):
+    return {"status":"OK","history":serialize(runtime.memory.repository.history(memory_id))}
+
+@app.post("/api/v1/memory/sources/revoke")
+def memory_revoke(payload: dict):
+    runtime.memory.repository.revoke_source(payload.get("source", ""))
+    return {"status":"OK","revoked":True}
+
+@app.delete("/api/v1/memory/{memory_id}/purge")
+def memory_purge(memory_id: str):
+    return {"status":"OK","deleted":runtime.memory.repository.purge(memory_id)}
+
+@app.post("/api/v1/paper/kill-switch")
+def paper_kill(payload: dict):
+    return {"status":"OK","result":paper_engine.set_kill_switch(payload.get("enabled"))}
+
+@app.post("/api/v1/charts")
+def chart(payload: dict):
+    items = payload.get("candles", [])
+    if not isinstance(items, list) or not 1 <= len(items) <= 500: raise ValueError("Chart requires 1..500 candles")
+    result = render_chart(tuple(_historical_candle(c) for c in items), payload.get("timeframe", "1d"), payload.get("adjustment_status", "UNKNOWN"))
+    _save_chart(result)
+    return {"status":"OK","chart":result}
+
+from market.research import ResearchPipeline
+from datetime import timedelta
+
+@app.post("/api/v1/research/analyze")
+def research_analyze(payload: dict):
+    for key in ("candles", "index_candles", "sector_candles"):
+        if len(payload.get(key,[])) > 500: raise ValueError("Too many candles")
+    result = ResearchPipeline().analyze(tuple(_historical_candle(c) for c in payload.get("candles",[])), as_of=_timestamp(payload.get("as_of")), timeframe=payload.get("timeframe","1d"), index_candles=tuple(_historical_candle(c) for c in payload.get("index_candles",[])), sector_candles=tuple(_historical_candle(c) for c in payload.get("sector_candles",[])), adjustment_status=payload.get("adjustment_status","UNKNOWN"), maximum_age=timedelta(seconds=min(604800,max(1,int(payload.get("maximum_age_seconds",345600))))))
+    _save_chart(result["chart"])
+    return {"status":"OK","result":serialize(result)}
+
+@app.post("/api/v1/research/scan")
+def research_scan(payload: dict):
+    items=payload.get("items",[])
+    if not isinstance(items,list) or not 1<=len(items)<=100: raise ValueError("Scanner accepts 1..100 instruments")
+    normalized=[]
+    for item in items:
+        if any(len(item.get(k,[]))>500 for k in ("candles","sector_candles")): raise ValueError("Too many candles")
+        normalized.append({**item,"candles":tuple(_historical_candle(c) for c in item.get("candles",[])),"sector_candles":tuple(_historical_candle(c) for c in item.get("sector_candles",[]))})
+    if len(payload.get("index_candles",[]))>500: raise ValueError("Too many index candles")
+    return {"status":"OK","result":serialize(ResearchPipeline().scan(normalized,as_of=_timestamp(payload.get("as_of")),timeframe=payload.get("timeframe","1d"),index_candles=tuple(_historical_candle(c) for c in payload.get("index_candles",[]))))}
+
+from core.jobs import JobService
+
+def durable_jobs():
+    if runtime.store is None: raise ValueError("Durable jobs require JARVIS_DB_ENABLED=true")
+    return JobService(runtime.store, runtime.personal)
+
+@app.get("/api/v1/jobs")
+def durable_job_list(): return {"status":"OK","jobs":durable_jobs().list()}
+
+@app.post("/api/v1/jobs")
+def durable_job_create(payload: dict):
+    return {"status":"OK","jobs":durable_jobs().register(payload.get("id"),payload.get("kind"),_timestamp(payload.get("next_at")),payload.get("interval_seconds",86400))}
+
+@app.patch("/api/v1/jobs/{identifier}")
+def durable_job_toggle(identifier: str,payload: dict): return {"status":"OK","jobs":durable_jobs().set_enabled(identifier,payload.get("enabled"))}
+
+@app.post("/api/v1/jobs-tick")
+def durable_job_tick(): return {"status":"OK","runs":durable_jobs().tick()}
+
+@app.get("/api/v1/reports")
+def durable_reports(): return {"status":"OK","reports":durable_jobs().results()}
+
+@app.get("/api/v1/alerts")
+def durable_alerts(): return {"status":"OK","alerts":durable_jobs().alerts()}
+
+def _save_chart(chart):
+    if runtime.store is None:
+        chart["persisted"] = False
+        return
+    import json
+    with runtime.store.connection:
+        runtime.store.connection.execute("CREATE TABLE IF NOT EXISTS chart_artifacts (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+        runtime.store.connection.execute("INSERT OR IGNORE INTO chart_artifacts VALUES (?,?)", (chart["metadata"]["artifact_id"],json.dumps(chart)))
+    chart["persisted"] = True
+
+@app.get("/api/v1/charts/{artifact_id}")
+def get_chart(artifact_id: str):
+    if runtime.store is None: raise ValueError("Chart persistence is disabled")
+    import json
+    with runtime.store.connection:
+        runtime.store.connection.execute("CREATE TABLE IF NOT EXISTS chart_artifacts (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+    row=runtime.store.connection.execute("SELECT payload FROM chart_artifacts WHERE id=?",(artifact_id,)).fetchone()
+    if not row:return {"status":"ERROR","code":"NOT_FOUND"}
+    return {"status":"OK","chart":json.loads(row[0])}
+
+install_api_security(app, runtime.config)
+
+if runtime.config.serve_ui:
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+    frontend_dist = Path(__file__).resolve().parent / 'frontend' / 'dist'
+    if not (frontend_dist / 'index.html').is_file():
+        raise ValueError('Build the frontend before enabling JARVIS_SERVE_UI')
+    app.mount('/', StaticFiles(directory=frontend_dist, html=True), name='dashboard')

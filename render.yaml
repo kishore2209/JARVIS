@@ -1,0 +1,33 @@
+# Paid infrastructure proposal. Review Render's estimate before provisioning.
+# One instance only: the server and read-only worker share a SQLite disk.
+services:
+  - type: web
+    name: jarvis
+    runtime: docker
+    plan: starter
+    region: singapore
+    numInstances: 1
+    branch: codex/full-srd-milestones
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    disk:
+      name: jarvis-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: JARVIS_ENV
+        value: paper
+      - key: JARVIS_DB_ENABLED
+        value: "true"
+      - key: JARVIS_DB_PATH
+        value: /var/data/jarvis.db
+      - key: JARVIS_API_TOKEN
+        generateValue: true
+      - key: JARVIS_LLM_ENABLED
+        value: "false"
+      - key: JARVIS_MARKET_PROVIDER
+        value: MOCK
+      - key: JARVIS_LOG_LEVEL
+        value: INFO

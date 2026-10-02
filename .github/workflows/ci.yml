@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'copilot/**'
+      - 'codex/**'
   pull_request:
     branches:
       - main
@@ -73,14 +74,10 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
       - name: Run backend test scripts
         run: |
-          while IFS= read -r file; do
-            echo "::group::${file}"
-            python "${file}"
-            echo "::endgroup::"
-          done < <(find tests -maxdepth 1 -name 'test_*.py' | sort)
+          python scripts/validate.py
 
   frontend-typecheck:
     runs-on: ubuntu-latest

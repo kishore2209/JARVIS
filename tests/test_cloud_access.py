@@ -24,6 +24,18 @@ class CloudAccessTests(unittest.TestCase):
         self.assertEqual(self.client.get('/', auth=('jarvis', 'wrong')).status_code, 401)
     def test_owner_can_open_interface(self):
         self.assertEqual(self.client.get('/', auth=self.auth).status_code, 200)
+    def test_owner_can_use_api_from_remote_peer(self):
+        with TestClient(app, client=('203.0.113.8', 443)) as remote:
+            result = remote.get('/api/v1/status', auth=self.auth)
+            self.assertEqual(result.status_code, 200)
+            self.assertNotIn(os.environ['JARVIS_API_TOKEN'], result.text)
+    def test_internal_bearer_does_not_bypass_browser_login(self):
+        result = self.client.get('/api/v1/status', headers={
+            'Authorization': 'Bearer ' + os.environ['JARVIS_API_TOKEN']})
+        self.assertEqual(result.status_code, 401)
+    def test_untrusted_host_is_rejected_after_login(self):
+        result = self.client.get('/api/v1/status', auth=self.auth, headers={'Host':'evil.example'})
+        self.assertEqual(result.status_code, 400)
     def test_cross_origin_writes_blocked(self):
         result = self.client.post('/api/v1/chat', auth=self.auth, headers={'Origin':'https://evil.example'}, json={'text':'hello'})
         self.assertEqual(result.status_code, 403)

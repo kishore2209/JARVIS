@@ -8,7 +8,7 @@ import re
 from types import MappingProxyType
 from typing import Mapping
 
-class GovernanceEnvironment(str, Enum): LOCAL='LOCAL'; DEVELOPMENT='DEVELOPMENT'; TEST='TEST'; PRODUCTION='PRODUCTION'
+class GovernanceEnvironment(str, Enum): LOCAL='LOCAL'; DEVELOPMENT='DEVELOPMENT'; TEST='TEST'; PRODUCTION='PRODUCTION'; PAPER='PAPER'; STAGING='STAGING'
 class GovernanceValidationError(ValueError): pass
 
 @dataclass(frozen=True)
@@ -37,24 +37,30 @@ class ConnectorGovernanceDecision:
 
 class ConnectorGovernanceService:
     def __init__(self, store=None, environment='DEVELOPMENT', observability=None):
-        self.store=store; self.environment=GovernanceEnvironment(environment.upper()) if environment.upper() in GovernanceEnvironment.__members__ else GovernanceEnvironment.DEVELOPMENT; self.observability=observability; self.profiles={}; self._restore()
+        self.store=store; self.environment=GovernanceEnvironment(environment.upper()); self.observability=observability; self.profiles={}; self._restore()
     @staticmethod
     def normalize_resource(resource):
         if not isinstance(resource,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}',resource): raise GovernanceValidationError('RESOURCE_INVALID')
         return resource
     def create_profile(self, connector_id, capabilities, resources, environment=None, enabled=True, profile_id=None):
+        if type(enabled) is not bool: raise GovernanceValidationError('ENABLED_MUST_BE_BOOLEAN')
+        if profile_id in self.profiles: raise GovernanceValidationError('PROFILE_ALREADY_EXISTS')
         resources=frozenset(self.normalize_resource(item) for item in resources); caps=frozenset(str(item) for item in capabilities)
         if not caps or any('*' in item for item in resources|caps): raise GovernanceValidationError('POLICY_CONFLICT')
         now=datetime.now(timezone.utc); profile=ConnectorPermissionProfile(profile_id or f'{connector_id}-{len(self.profiles)+1}',connector_id,GovernanceEnvironment(environment.upper()) if environment else self.environment,bool(enabled),caps,resources,now,now)
         self.profiles[profile.profile_id]=profile; self._save(profile); self._event('governance_profile_created',profile); return profile
     def update_profile(self, profile_id, capabilities=None, resources=None, enabled=None):
+        if enabled is not None and type(enabled) is not bool: raise GovernanceValidationError('ENABLED_MUST_BE_BOOLEAN')
         profile=self.profiles.get(profile_id)
         if not profile: raise GovernanceValidationError('PROFILE_NOT_FOUND')
         new_resources=profile.allowed_resources if resources is None else frozenset(self.normalize_resource(item) for item in resources)
         new_caps=profile.allowed_capabilities if capabilities is None else frozenset(str(item) for item in capabilities)
+        if not new_caps or any('*' in item for item in new_resources|new_caps): raise GovernanceValidationError('POLICY_CONFLICT')
         now=datetime.now(timezone.utc); profile=replace(profile,allowed_capabilities=new_caps,allowed_resources=new_resources,enabled=profile.enabled if enabled is None else bool(enabled),updated_at=now,version=profile.version+1); self.profiles[profile_id]=profile; self._save(profile); self._event('governance_profile_updated',profile); return profile
     def decide(self, connector_id, capability_id, resource_id, credential_configured, write_enabled):
-        profile=next((p for p in self.profiles.values() if p.connector_id==connector_id and p.environment is self.environment),None)
+        matching=[p for p in self.profiles.values() if p.connector_id==connector_id and p.environment is self.environment]
+        if len(matching)>1: return ConnectorGovernanceDecision(False,connector_id,capability_id,resource_id,'POLICY_AMBIGUOUS',True)
+        profile=matching[0] if matching else None
         if not profile: return ConnectorGovernanceDecision(False,connector_id,capability_id,resource_id,'PROFILE_NOT_FOUND',True)
         if not profile.enabled: return ConnectorGovernanceDecision(False,connector_id,capability_id,resource_id,'PROFILE_DISABLED',True,policy_version=profile.version)
         if not credential_configured: return ConnectorGovernanceDecision(False,connector_id,capability_id,resource_id,'CREDENTIAL_NOT_CONFIGURED',True,policy_version=profile.version)
@@ -64,6 +70,15 @@ class ConnectorGovernanceService:
         except GovernanceValidationError: return ConnectorGovernanceDecision(False,connector_id,capability_id,resource_id,'RESOURCE_INVALID',True,policy_version=profile.version)
         if normalized not in profile.allowed_resources: return ConnectorGovernanceDecision(False,connector_id,capability_id,normalized,'RESOURCE_NOT_ALLOWED',True,policy_version=profile.version)
         return ConnectorGovernanceDecision(True,connector_id,capability_id,normalized,'GOVERNANCE_ALLOWED',True,policy_version=profile.version)
+    def delete_profile(self, profile_id, connector_id):
+        profile=self.profiles.get(profile_id)
+        if profile is None or profile.connector_id!=connector_id: raise GovernanceValidationError('PROFILE_NOT_FOUND')
+        if self.store:
+            with self.store.connection:
+                self.store.connection.execute('DELETE FROM connector_governance WHERE id=?',(profile_id,))
+        del self.profiles[profile_id]
+        self._event('governance_profile_deleted',profile)
+
     def _save(self, profile):
         if self.store:
             payload={**profile.__dict__,'environment':profile.environment.value,'allowed_capabilities':list(profile.allowed_capabilities),'allowed_resources':list(profile.allowed_resources),'created_at':profile.created_at.isoformat(),'updated_at':profile.updated_at.isoformat()}

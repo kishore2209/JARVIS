@@ -25,3 +25,30 @@ describe('JARVIS UI',()=>{
  it('renders automation jobs and history and allows a single tick request',async()=>{vi.mocked(api).mockImplementation(async(path:string)=>{ if(path==='/api/v1/automation/jobs'){ return {jobs:[{job_id:'J-1',job_name:'Alpha',enabled:true,schedule_type:'DAILY',execution_mode:'PAPER'}]}; } if(path==='/api/v1/automation/history'){ return {history:[{run_id:'R-1',status:'SUCCESS',retry_count:1,timestamp:'2024-01-01T00:00:00Z'}]}; } if(path==='/api/v1/automation/tick'){ return {status:'OK',message:'Tick accepted'}; } return {status:'OK',message:'F&O DATA NOT AVAILABLE'}; }); render(<App/>); fireEvent.click(screen.getByText('Automation')); fireEvent.click(screen.getByText('Jobs')); await waitFor(()=>expect(screen.getByText('J-1')).toBeTruthy()); fireEvent.click(screen.getByText('Run Tick')); await waitFor(()=>expect(vi.mocked(api).mock.calls.filter(([path])=>path==='/api/v1/automation/tick')).toHaveLength(1)); });
  it('renders the allowlisted Tools view and exact plan controls',async()=>{vi.mocked(api).mockImplementation(async(path:string)=>{ if(path==='/api/v1/tools'){ return {tools:[{tool_id:'system.status',risk_class:'READ_ONLY'}]}; } if(path==='/api/v1/tools/plan'){ return {plan:{plan_id:'PLAN-1'}}; } return {status:'OK',message:'F&O DATA NOT AVAILABLE'}; }); render(<App/>); fireEvent.click(screen.getByText('Tools')); fireEvent.click(screen.getByText('Refresh Tools')); await waitFor(()=>expect(screen.getByText(/system.status/)).toBeTruthy()); fireEvent.click(screen.getByText('Plan Tool')); await waitFor(()=>expect(screen.getByText(/PLAN-1/)).toBeTruthy()); expect(screen.getByText('Approve Exact Plan')).toBeTruthy(); expect(screen.getByText('Execute Plan')).toBeTruthy(); });
 });
+ it('accepts an optional provider token, sends selected instrument, and clears stale tokens',async()=>{
+   render(<App/>);fireEvent.click(screen.getByText('Analysis'));
+   const button=screen.getByText('Full Analysis') as HTMLButtonElement;
+   await waitFor(()=>expect(button.disabled).toBe(false));
+   fireEvent.change(screen.getByLabelText('Symbol'),{target:{value:'RELIANCE'}});
+   fireEvent.change(screen.getByLabelText('Instrument token'),{target:{value:'2885'}});
+   await waitFor(()=>expect(button.disabled).toBe(false));fireEvent.click(button);
+   await waitFor(()=>expect(api).toHaveBeenCalledWith('/api/v1/analysis/full',expect.objectContaining({body:expect.any(String)})));
+   const call=vi.mocked(api).mock.calls.find(([path])=>path==='/api/v1/analysis/full')!;
+   expect(JSON.parse(String(call[1]?.body))).toMatchObject({instrument:'RELIANCE',exchange:'NSE',token:'2885'});
+   fireEvent.change(screen.getByLabelText('Exchange'),{target:{value:'BSE'}});
+   expect((screen.getByLabelText('Instrument token') as HTMLInputElement).value).toBe('');await waitFor(()=>expect(button.disabled).toBe(false));
+   fireEvent.change(screen.getByLabelText('Instrument token'),{target:{value:'500325'}});
+   fireEvent.change(screen.getByLabelText('Symbol'),{target:{value:'TCS'}});
+   expect((screen.getByLabelText('Instrument token') as HTMLInputElement).value).toBe('');await waitFor(()=>expect(button.disabled).toBe(false));
+ });
+
+ it('allows server-side resolution without submitting an empty token',async()=>{
+   render(<App/>);fireEvent.click(screen.getByText('Analysis'));
+   fireEvent.change(screen.getByLabelText('Symbol'),{target:{value:'TCS-EQ'}});
+   await waitFor(()=>expect((screen.getByText('Full Analysis') as HTMLButtonElement).disabled).toBe(false));
+   fireEvent.click(screen.getByText('Full Analysis'));
+   await waitFor(()=>expect(api).toHaveBeenCalledWith('/api/v1/analysis/full',expect.objectContaining({body:expect.any(String)})));
+   const call=vi.mocked(api).mock.calls.find(([path])=>path==='/api/v1/analysis/full')!;
+   expect(JSON.parse(String(call[1]?.body))).toMatchObject({instrument:'TCS-EQ',exchange:'NSE'});
+   expect(JSON.parse(String(call[1]?.body))).not.toHaveProperty('token');
+ });

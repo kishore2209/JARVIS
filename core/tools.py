@@ -7,6 +7,7 @@ from enum import Enum
 import hashlib
 import json
 import re
+from threading import RLock
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 from uuid import uuid4
@@ -187,6 +188,7 @@ class ToolPolicyEngine:
 class ToolService:
     def __init__(self, registry: ToolRegistry, observability=None, plan_ttl_seconds: int = 300, governance=None):
         self.registry = registry; self.policy = ToolPolicyEngine(); self.observability = observability; self.governance=governance; self.plan_ttl = timedelta(seconds=plan_ttl_seconds); self.plans: dict[str, ToolInvocationPlan] = {}; self.approvals: dict[str, ToolApproval] = {}; self.results: dict[str, ToolExecutionResult] = {}
+        self._execution_lock = RLock()
 
     def plan(self, tool_id: str, arguments: Mapping[str, Any] | None = None, source: str = "USER", correlation_id: str = "TOOL") -> ToolInvocationPlan:
         descriptor = self.registry.descriptor(tool_id); validated = self.registry.validate_arguments(tool_id, arguments or {})
@@ -203,6 +205,10 @@ class ToolService:
         approval = ToolApproval(plan.plan_id, plan.tool_id, plan.argument_fingerprint, datetime.now(timezone.utc), source); self.approvals[plan_id] = approval; self.plans[plan_id] = ToolInvocationPlan(**{**plan.__dict__, "status": ToolPlanStatus.APPROVED}); self._metric("tool_confirmations_total"); self._event("tool_approved", plan); return approval
 
     def execute(self, plan_id: str, approval: ToolApproval | None = None) -> ToolExecutionResult:
+        with self._execution_lock:
+            return self._execute_once(plan_id, approval)
+
+    def _execute_once(self, plan_id: str, approval: ToolApproval | None = None) -> ToolExecutionResult:
         plan = self._get_plan(plan_id); self._check_expired(plan)
         if plan_id in self.results: self._metric("tool_duplicate_execution_blocked_total"); return ToolExecutionResult(plan_id, plan.tool_id, ToolPlanStatus.REJECTED.value, warnings=("Plan already completed.",), error_category="TOOL_POLICY_REJECTED", correlation_id=plan.correlation_id)
         descriptor=self.registry.descriptor(plan.tool_id); self._check_governance(descriptor, plan.validated_arguments)
@@ -214,7 +220,10 @@ class ToolService:
             result = ToolExecutionResult(plan_id, plan.tool_id, ToolPlanStatus.SUCCEEDED.value, value, started_at=started, completed_at=datetime.now(timezone.utc), correlation_id=plan.correlation_id)
             self.results[plan_id] = result; self._event("tool_execution_completed", plan); return result
         except Exception:
-            self._metric("tool_failures_total"); self._event("tool_execution_failed", plan); return ToolExecutionResult(plan_id, plan.tool_id, ToolPlanStatus.FAILED.value, error_category=ToolErrorCategory.TOOL_EXECUTION_FAILED.value, correlation_id=plan.correlation_id)
+            self._metric("tool_failures_total"); self._event("tool_execution_failed", plan)
+            result = ToolExecutionResult(plan_id, plan.tool_id, ToolPlanStatus.FAILED.value, error_category=ToolErrorCategory.TOOL_EXECUTION_FAILED.value, correlation_id=plan.correlation_id)
+            self.results[plan_id] = result
+            return result
 
     def show(self, plan_id: str) -> ToolInvocationPlan: return self._get_plan(plan_id)
     def _get_plan(self, plan_id):
@@ -235,21 +244,28 @@ class ToolService:
 
 def build_tool_service(runtime, observability=None) -> ToolService:
     registry = ToolRegistry()
+    def connector_call(connector_id, capability_id, arguments, write=False):
+        from core.connectors import ConnectorRequest
+        operation = runtime.connectors.write if write else runtime.connectors.read
+        result = operation(ConnectorRequest('TOOL', connector_id, capability_id, arguments))
+        if result.status != 'SUCCEEDED':
+            raise ToolValidationError(result.error_category or 'CONNECTOR_FAILED')
+        return result.data
     mode = ("ANALYSIS_ONLY",)
     registry.register(ToolDescriptor("system.status", "System status", "Current core status.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: {"status": "OK", "live_execution_supported": False})
     registry.register(ToolDescriptor("system.readiness", "System readiness", "Current deterministic readiness.", ToolRiskClass.READ_ONLY, False, mode, {"workflow": {"type": "string", "required": False, "max_length": 40}}), lambda args: runtime.observability.readiness(args.get("workflow", "ANALYSIS_ONLY")))
-    registry.register(ToolDescriptor("memory.list", "Memory list", "List selected personal context.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: [record for record in runtime.memory.list()])
-    registry.register(ToolDescriptor("memory.search", "Memory search", "Search selected personal context.", ToolRiskClass.READ_ONLY, False, mode, {"query": {"type": "string", "required": True, "max_length": 120}}), lambda args: list(runtime.memory.search(args["query"])))
+    registry.register(ToolDescriptor("memory.list", "Memory list", "List selected personal context.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: [record for record in runtime.memory.list(scope=MemoryScope.DURABLE) if runtime.memory.repository.permitted(record)])
+    registry.register(ToolDescriptor("memory.search", "Memory search", "Search selected personal context.", ToolRiskClass.READ_ONLY, False, mode, {"query": {"type": "string", "required": True, "max_length": 120}}), lambda args: [record for record in runtime.memory.search(args["query"]) if record.scope is MemoryScope.DURABLE and runtime.memory.repository.permitted(record)])
     registry.register(ToolDescriptor("portfolio.summary", "Portfolio summary", "Read current paper portfolio summary.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: runtime.paper_engine.account)
     registry.register(ToolDescriptor("automation.status", "Automation status", "Read automation jobs and history metadata.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: {"jobs": list(runtime.automation.jobs), "history_count": len(runtime.automation.history)})
     registry.register(ToolDescriptor("memory.preference.set", "Set memory preference", "Set one explicit local preference.", ToolRiskClass.LOCAL_REVERSIBLE, True, mode, {"key": {"type": "string", "required": True, "max_length": 120}, "value": {"type": "string", "required": True, "max_length": 500}}), lambda args: runtime.memory.create(MemoryCategory.PREFERENCE, args["key"], args["value"], scope=MemoryScope.DURABLE))
     if getattr(runtime, "connectors", None):
         registry.register(ToolDescriptor("connector.list", "Connector list", "List configured read-only connectors.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: runtime.connectors.registry.safe_list())
         registry.register(ToolDescriptor("connector.capabilities", "Connector capabilities", "List capabilities for one connector.", ToolRiskClass.READ_ONLY, False, mode, {"connector_id": {"type": "string", "required": True, "max_length": 80}}), lambda args: runtime.connectors.registry.safe_capabilities(args["connector_id"]))
-        registry.register(ToolDescriptor("connector.read", "Connector read", "Read a preconfigured connector resource.", ToolRiskClass.READ_ONLY, False, mode, {"connector_id": {"type": "string", "required": True, "max_length": 80}, "capability_id": {"type": "string", "required": True, "max_length": 120}, "resource": {"type": "string", "required": False, "max_length": 120}}), lambda args: runtime.connectors.read(__import__("core.connectors", fromlist=["ConnectorRequest"]).ConnectorRequest("TOOL", args["connector_id"], args["capability_id"], {"resource": args["resource"]})).data)
+        registry.register(ToolDescriptor("connector.read", "Connector read", "Read a preconfigured connector resource.", ToolRiskClass.READ_ONLY, False, mode, {"connector_id": {"type": "string", "required": True, "max_length": 80}, "capability_id": {"type": "string", "required": True, "max_length": 120}, "resource": {"type": "string", "required": False, "max_length": 120}}), lambda args: connector_call(args["connector_id"], args["capability_id"], {"resource":args["resource"]} if "resource" in args else {}))
         if any(item["connector_id"] == "jira" for item in runtime.connectors.registry.safe_list()):
             for capability_id, schema in (("jira.projects.list", {}), ("jira.project.get", {"project_key":{"type":"string","required":True,"max_length":50}}), ("jira.issue.get", {"issue_key":{"type":"string","required":True,"max_length":40}}), ("jira.issues.search", {"project_key":{"type":"string","required":False,"max_length":50},"status":{"type":"string","required":False,"max_length":100},"text":{"type":"string","required":False,"max_length":100},"start_at":{"type":"string","required":False,"max_length":6},"max_results":{"type":"string","required":False,"max_length":3}})):
-                registry.register(ToolDescriptor(capability_id, capability_id, "Read-only Jira capability.", ToolRiskClass.READ_ONLY, False, mode, schema), lambda args, capability_id=capability_id: runtime.connectors.read(__import__("core.connectors",fromlist=["ConnectorRequest"]).ConnectorRequest("TOOL","jira",capability_id,args)).data)
+                registry.register(ToolDescriptor(capability_id, capability_id, "Read-only Jira capability.", ToolRiskClass.READ_ONLY, False, mode, schema), lambda args, capability_id=capability_id: connector_call("jira", capability_id, args))
             if getattr(runtime, "projects", None): registry.register(ToolDescriptor("project.snapshot", "Project snapshot", "Bounded Jira/GitHub project intelligence.", ToolRiskClass.READ_ONLY, False, mode, {"workspace_id":{"type":"string","required":True,"max_length":100}}), lambda args: runtime.projects.snapshot(args["workspace_id"]))
             if getattr(runtime, "delivery", None):
                 registry.register(ToolDescriptor("project.delivery", "Project delivery", "Describe deterministic project changes and attention signals.", ToolRiskClass.READ_ONLY, False, mode, {"workspace_id":{"type":"string","required":True,"max_length":100}}), lambda args: runtime.delivery.analyze(args["workspace_id"]))
@@ -257,7 +273,12 @@ def build_tool_service(runtime, observability=None) -> ToolService:
         github = runtime.connectors.registry.descriptor("github")
         if github.write_enabled:
             for capability_id, schema in (("github.issue.create", {"owner":{"type":"string","required":True,"max_length":100},"repo":{"type":"string","required":True,"max_length":100},"title":{"type":"string","required":True,"max_length":200},"body":{"type":"string","required":False,"max_length":5000}}), ("github.issue.comment", {"owner":{"type":"string","required":True,"max_length":100},"repo":{"type":"string","required":True,"max_length":100},"issue_number":{"type":"string","required":True,"max_length":10},"body":{"type":"string","required":True,"max_length":5000}}), ("github.pull_request.comment", {"owner":{"type":"string","required":True,"max_length":100},"repo":{"type":"string","required":True,"max_length":100},"pull_number":{"type":"string","required":True,"max_length":10},"body":{"type":"string","required":True,"max_length":5000}})):
-                registry.register(ToolDescriptor(capability_id, capability_id, "Allowlisted GitHub collaboration action.", ToolRiskClass.EXTERNAL_SIDE_EFFECT, True, mode, schema), lambda args, capability_id=capability_id: runtime.connectors.write(__import__("core.connectors", fromlist=["ConnectorRequest"]).ConnectorRequest("TOOL", "github", capability_id, args)).data)
+                registry.register(ToolDescriptor(capability_id, capability_id, "Allowlisted GitHub collaboration action.", ToolRiskClass.EXTERNAL_SIDE_EFFECT, True, mode, schema), lambda args, capability_id=capability_id: connector_call("github", capability_id, args, write=True))
+    if getattr(runtime, "personal", None):
+        registry.register(ToolDescriptor("life.daily_plan", "Daily plan", "Read local tasks and calendar conflicts.", ToolRiskClass.READ_ONLY, False, mode, {}), lambda _args: runtime.personal.daily_plan())
+    if getattr(runtime, 'knowledge', None):
+        registry.register(ToolDescriptor('knowledge.search', 'Search knowledge', 'Retrieve permission-filtered source excerpts with citations.', ToolRiskClass.READ_ONLY, False, mode,
+            {'query': {'type':'string','required':True,'max_length':2000}}), lambda args: runtime.knowledge.retrieve(args['query'], principal='owner'))
     return ToolService(registry, observability, governance=getattr(runtime, 'governance', None))
 
 

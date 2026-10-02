@@ -118,6 +118,14 @@ class PaperTradingEngine:
             raise ValueError("Paper order rejected: RiskDecision is not approved.")
         if proposal.instrument != decision.instrument or decision.approved_quantity <= 0:
             raise ValueError("Paper order rejected: approved decision does not match proposal.")
+        risk = abs(proposal.proposed_entry - proposal.proposed_stop)
+        reward = abs(proposal.proposed_target - proposal.proposed_entry)
+        if (decision.lot_size != proposal.lot_size or decision.risk_per_unit != risk
+                or decision.reward_per_unit != reward
+                or decision.estimated_position_value != proposal.proposed_entry * decision.approved_quantity
+                or decision.estimated_monetary_risk != risk * decision.approved_quantity
+                or (proposal.quantity_requested is not None and decision.approved_quantity > proposal.quantity_requested)):
+            raise ValueError("Paper order rejected: decision is not bound to this proposal.")
         self._order_number += 1
         order = VirtualOrder(f"PAPER-ORDER-{self._order_number:04d}", proposal.instrument, proposal.direction, decision.approved_quantity, proposal.proposed_entry, proposal.proposed_stop, proposal.proposed_target, proposal.lot_size, proposal.timestamp, proposal.source, "PENDING", decision, proposal.evidence_reference)
         self.account.order_history[order.order_id] = order

@@ -1,9 +1,7 @@
-numpy
-sounddevice
-faster-whisper
-pyttsx3
-smartapi-python
-fastapi
-uvicorn
-google-genai
-httpx
+# Core server and browser UI runtime (validated with Python 3.12).
+fastapi==0.141.1
+pydantic==2.13.5
+uvicorn==0.54.0
+httpx==0.28.1
+google-genai==2.25.0
+cryptography==46.0.0

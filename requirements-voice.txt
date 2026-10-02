@@ -1,0 +1,6 @@
+-r requirements.txt
+# Optional local microphone/speech engines; browser voice needs none of these.
+numpy
+sounddevice
+faster-whisper
+pyttsx3

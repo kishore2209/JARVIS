@@ -127,7 +127,8 @@ class ConnectorService:
         try:
             descriptor=self.registry.descriptor(request.connector_id); capability=self.registry.capability(request.connector_id, request.capability_id); args=self.policy.validate(descriptor, capability, request.arguments)
             if not descriptor.credential_required and descriptor.kind is ConnectorKind.MCP and not descriptor.configured: pass
-            data=self.registry.transport(request.connector_id).read(request.capability_id, args)
+            transport = self.registry.transport(request.connector_id)
+            data = transport.read_with_context(request.capability_id, args, request.correlation_id) if hasattr(transport, 'read_with_context') else transport.read(request.capability_id, args)
             if len(json.dumps(data, default=str)) > self.max_result_chars: raise ConnectorValidationError("OUTPUT_TOO_LARGE")
             result=ConnectorResult(request.request_id,request.connector_id,request.capability_id,"SUCCEEDED",data,started_at=started,completed_at=datetime.now(timezone.utc),correlation_id=request.correlation_id,source_metadata={"kind":descriptor.kind.value})
             self._metric("connector_requests_total"); self._event("connector_request_completed", request, "SUCCEEDED"); return result
@@ -166,6 +167,13 @@ def build_connector_service(observability=None):
     from core.jira_connector import build_jira_connector
     jira_descriptor, jira_adapter = build_jira_connector()
     registry.register(jira_descriptor, jira_adapter)
+    from core.mcp_http import configured_mcp_transport
+    mcp = configured_mcp_transport()
+    if mcp is not None:
+        registry.register(ConnectorDescriptor('mcp.remote', 'Configured MCP resources', ConnectorKind.MCP, '1', True,
+            (ConnectorCapability('mcp.resources.list', 'List configured resource aliases'),
+             ConnectorCapability('mcp.resource.read', 'Read an explicitly configured resource', argument_schema={'resource': {'type':'string','required':True,'max_length':80}})),
+            configured=True, description='HTTPS read-only MCP resources; server tools are not exposed'), mcp)
     return ConnectorService(registry, observability)
 
 __all__=["ConnectorCapability","ConnectorDescriptor","ConnectorKind","ConnectorPolicyEngine","ConnectorRequest","ConnectorResult","ConnectorRegistry","ConnectorRisk","ConnectorService","ConnectorValidationError","FakeMCPTransport","build_connector_service"]

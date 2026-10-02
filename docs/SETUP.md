@@ -2,17 +2,17 @@
 
 ## Prerequisites
 
-- Python 3.14.x (the runtime used for validation)
+- Python 3.12 (used for the latest validation)
 - Node.js/npm compatible with the checked-in frontend lockfile
 - No broker or Gemini credentials are required for deterministic local mode
 
 ## Backend
 
 ```powershell
-py -3.14 -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+$env:JARVIS_DB_ENABLED="true"
 python -m jarvis_server
 ```
 
@@ -43,7 +43,7 @@ The frontend expects the backend at `http://127.0.0.1:8000` by default. Set `VIT
 
 ## Configuration
 
-Copy `.env.example` to `.env`. `JARVIS_LLM_ENABLED=false` keeps Gemini disabled. To enable the optional server-side Gemini adapter, set `JARVIS_LLM_ENABLED=true` and provide `GEMINI_API_KEY`; the key is never sent to the frontend or returned by diagnostics. Angel One variables are server-side only and are not required for the mock/offline runtime.
+The launcher reads process environment variables; it does not load `.env` automatically. Use `.env.example` as a reference and set values in your shell. `JARVIS_LLM_ENABLED=false` keeps Gemini disabled. To enable the optional server-side Gemini adapter, set `JARVIS_LLM_ENABLED=true` and provide `GEMINI_API_KEY`; the key is never sent to the frontend or returned by diagnostics. Angel One variables are server-side only and are not required for the mock/offline runtime.
 
 Set `JARVIS_DB_ENABLED=true` to create the configured SQLite database at `JARVIS_DB_PATH`. Runtime databases are ignored by Git. Startup restores no jobs automatically into execution; automation remains explicit-tick only.
 
@@ -77,7 +77,7 @@ Run the full backend and frontend suites from the repository instructions before
 ## Operational limits
 
 - LIVE trading remains unsupported.
-- There is no automatic scheduler or background trading loop.
+- The optional `python -m jarvis_worker` runs registered read-only jobs when explicitly started; it does not place trades.
 - Voice support depends on browser capabilities and remains push-to-talk.
 - Gemini is optional and requires external connectivity only when explicitly enabled.
 - TLS, reverse proxy, process supervision, and production secret injection remain deployment-environment responsibilities.

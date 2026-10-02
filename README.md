@@ -39,10 +39,10 @@ Personal AI operating system foundation focused on deterministic market analysis
 
 ### Backend
 ```powershell
-py -3.14 -m venv .venv
+py -3.12 -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+$env:JARVIS_DB_ENABLED="true"
 python -m jarvis_server
 ```
 

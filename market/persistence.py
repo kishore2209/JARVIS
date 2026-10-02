@@ -1,4 +1,6 @@
 import json, os, sqlite3
+import threading
+from uuid import uuid4
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -28,7 +30,21 @@ class SQLiteStore:
     def __init__(self,path=None,observability=None):
         self.path=path or os.getenv("JARVIS_DB_PATH","data/jarvis.db"); parent=os.path.dirname(self.path)
         if parent: os.makedirs(parent,exist_ok=True)
-        self.observability=observability;self.connection=sqlite3.connect(self.path);self.connection.row_factory=sqlite3.Row;self.initialize()
+        self.observability=observability
+        self._local=threading.local(); self._connections=[]; self._connection_lock=threading.RLock(); self._closed=False
+        self._dsn=f"file:jarvis-{uuid4().hex}?mode=memory&cache=shared" if self.path == ":memory:" else self.path
+        self.initialize()
+    @property
+    def connection(self):
+        with self._connection_lock:
+            if self._closed: raise RuntimeError("Store is closed")
+            if not hasattr(self._local, "connection"):
+                connection=sqlite3.connect(self._dsn, uri=self.path == ":memory:", check_same_thread=False, timeout=10)
+                connection.row_factory=sqlite3.Row
+                connection.execute("PRAGMA busy_timeout=10000")
+                connection.execute("PRAGMA journal_mode=WAL")
+                self._local.connection=connection; self._connections.append(connection)
+            return self._local.connection
     def initialize(self):
         with self.connection:
             self.connection.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
@@ -64,7 +80,10 @@ class SQLiteStore:
                 self.connection.execute("INSERT INTO positions VALUES (?,?)",(position.position_id,json.dumps(encode(position))))
                 if journal:self.connection.execute("INSERT INTO journal VALUES (?,?)",(journal.position_id,json.dumps(encode(journal))))
         except sqlite3.IntegrityError as error:raise ValueError("Paper execution persistence failed.") from error
-    def close(self): self.connection.close()
+    def close(self):
+        with self._connection_lock:
+            for connection in self._connections: connection.close()
+            self._connections.clear(); self._closed=True
 
 class Repository:
     table=""
